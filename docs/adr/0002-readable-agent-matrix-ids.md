@@ -73,8 +73,10 @@ trailers and logs show it wherever a client has no display name.
    `management_agent_executor.rs`, because their executor protocol carries
    the proposed Agent ID. Converting them is a separate change.
 7. **Detection.** Clients treat a localpart as an Agent puppet when it is
-   `_hagency_` + `[a-z0-9_-]+` and is not `_hagency_service`. Server-side, the
-   desktop's `hagency_core::puppet::is_puppet_localpart` and the admin user
+   `_hagency_` + `[a-z0-9_-]+` with a `_` between two non-empty parts
+   (`agt_<ulid>` or `<owner>_<name>`). Single-word reserved names such as
+   `_hagency_service` or `_hagency_bridge` are service accounts. The desktop's
+   `hagency_core::puppet::is_puppet_localpart` and the server's admin user
    list apply this rule. No client may derive an Agent ID from a puppet ID or
    the reverse; it reads the pairing from the server's Agent listing. As
    before, the name is never authority: callers still check the server and

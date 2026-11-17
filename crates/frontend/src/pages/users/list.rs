@@ -747,11 +747,14 @@ fn sort_indicator(current_sort_by: &str, current_sort_dir: &str, column: &str) -
 
 // TODO(R4): list.rs is over budget; split row rendering (badges, actions) from
 // the page's data loading along that seam.
-/// An Agent puppet in the reserved namespace `^@_hagency_[a-z0-9_-]+:` (ADR 0002);
-/// the service account is matched before this.
+/// An Agent puppet (ADR 0002): `agt_<ulid>` or `<owner>_<name>` after the
+/// reserved `_hagency_` prefix; single-word names are service accounts.
 fn is_agent_puppet(user_id: &str) -> bool {
     user_id
         .strip_prefix("@_hagency_")
         .and_then(|rest| rest.split_once(':'))
-        .is_some_and(|(local, _)| !local.is_empty() && local.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'))
+        .is_some_and(|(local, _)| {
+            local.split_once('_').is_some_and(|(head, tail)| !head.is_empty() && !tail.is_empty())
+                && local.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        })
 }
