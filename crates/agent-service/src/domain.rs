@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::BTreeSet, sync::Arc};
 
+// TODO(R4): domain.rs is over budget; split Agent identity lifecycle (create,
+// provisioning, retirement) out of the binding/room code along that seam.
+#[path = "domain_agent_mxid.rs"]
+mod agent_mxid;
 #[path = "domain_agent_rename.rs"]
 mod agent_rename;
 pub(crate) use agent_rename::PROFILE_WRITES;
@@ -944,7 +948,7 @@ impl DomainStore {
             }
             let device=p.device_id.as_deref().ok_or(Error::Unauthorized("device_authorization_required"))?;
             sql_query("SELECT true AS matched FROM hagency_agent_v1.devices WHERE id=$1 AND user_id=$2 AND NOT revoked FOR SHARE").bind::<Text,_>(device).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await.map_err(hidden)?;
-            let id=format!("agt_{}",entity_id()?);let mxid=format!("@{}{id}:{}",self.namespace,self.server);
+            let id=format!("agt_{}",entity_id()?);let mxid=agent_mxid::mint(db,&self.namespace,&self.server,&p.mxid,request.display_name.trim()).await?;
             let agent=sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,puppet_mxid,display_name,state,execution_device_id,visibility) VALUES($1,$2,$3,$4,'creating',$5,$6) RETURNING id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility").bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(mxid).bind::<Text,_>(request.display_name.trim()).bind::<Text,_>(device).bind::<Text,_>(request.visibility.as_str()).get_result::<Agent>(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.domain_commands(actor_user_id,operation,key,digest,agent_id,binding_id) VALUES($1,'agent.create',$2,$3,$4,NULL)").bind::<Text,_>(&p.user_id).bind::<Text,_>(&request.idempotency_key).bind::<Text,_>(digest).bind::<Text,_>(&id).execute(db).await?;
             Self::audit(db,p,"agent.create",&id,now).await?;Ok(agent)

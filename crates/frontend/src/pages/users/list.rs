@@ -614,7 +614,7 @@ pub fn UserList() -> Element {
                                                                     {t("users.admin")}
                                                                 }
                                                             } else {
-                                                                Badge { variant: BadgeVariant::Secondary, if user_id.starts_with("@_hagency_agt_") {"Agent"} else if user_id.starts_with("@_hagency_") {"Hagency service"} else {{t("common.user")}} }
+                                                                Badge { variant: BadgeVariant::Secondary, if user_id.starts_with("@_hagency_service:") {"Hagency service"} else if user_id.starts_with("@_hagency_") {"Agent"} else {{t("common.user")}} }
                                                             }
                                                         }
                                                     }

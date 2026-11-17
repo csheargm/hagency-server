@@ -53,7 +53,7 @@ Appservice 的 **hs_token** 与 owner/device token 是不同凭据。推荐 Auth
 
 ## 实体 ID
 
-新分配的 Hagency 实体 ID 为类型前缀加26字符小写 ULID：`usr_`、`ses_`、`dev_`、`prj_`、`agt_`、`bnd_`、`ins_`、`evt_`、`rep_`。生成器在同一服务器进程内单调递增；跨进程/重启不承诺全局严格生成顺序。Agent 傀儡账号使用 `@_hagency_agt_<ulid>:<server>`（配置 namespace 可带额外后缀）。客户端仍将 ID 作为不透明字符串，不能解析时间戳来推断权限、租约、业务时间或完成状态。
+新分配的 Hagency 实体 ID 为类型前缀加26字符小写 ULID：`usr_`、`ses_`、`dev_`、`prj_`、`agt_`、`bnd_`、`ins_`、`evt_`、`rep_`。生成器在同一服务器进程内单调递增；跨进程/重启不承诺全局严格生成顺序。新的个人 Agent 傀儡账号使用可读形式 `@_hagency_<owner>_<name>[-N]:<server>`（owner 为所有者 localpart，name 为初始显示名，均规范化为 `[a-z0-9-]`，重名追加 `-2`、`-3`；见 docs/adr/0002）；已有 Agent 及共享项目 Agent 保留 `@_hagency_agt_<ulid>:<server>`（配置 namespace 可带额外后缀）。傀儡 ID 创建后不变，改名只改显示名；客户端不得从傀儡 ID 推导 Agent ID。客户端仍将 ID 作为不透明字符串，不能解析时间戳来推断权限、租约、业务时间或完成状态。
 
 `entity_id()` 与 `secret_token()` 分开：会话/设备 bearer 和 reply worker claim 保留独立32字节随机值，不用 ULID。数据库字段和 API DTO 不变；已持久化身份及幂等请求仍引用原 ID，Matrix Room/Event ID、消息事务 ID、摘要、客户端安装标识与已开始的 execution ID 保留原生成规则。
 

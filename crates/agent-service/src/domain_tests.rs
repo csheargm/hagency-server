@@ -70,7 +70,7 @@ fn facts(p: &Principal, space: &str, room: &str, puppet: Option<&str>) -> RoomFa
         encrypted: false,
     }
 }
-async fn user(store: &Store, suffix: &str, name: &str) -> (String, Principal) {
+pub(super) async fn user(store: &Store, suffix: &str, name: &str) -> (String, Principal) {
     let grant = store
         .sign_in(
             Identity {
@@ -1676,7 +1676,7 @@ async fn postgres_global_identity_create_needs_no_project_or_room_and_binding_is
     crate::assert_entity_id(&agent.id, "agt_");
     assert_eq!(
         agent.puppet_mxid,
-        format!("@_hagency_test_{}:example.test", agent.id)
+        format!("@{}:example.test", super::agent_mxid::base_localpart("_hagency_test_", &p.mxid, "Global Codex"))
     );
     assert_eq!(agent.state, "creating");
     assert_eq!(agent.owner_user_id, p.user_id);

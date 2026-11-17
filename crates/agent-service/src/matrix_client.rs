@@ -37,7 +37,7 @@ impl MatrixClient {
         if !local.starts_with("@_hagency_")
             || !local[1..]
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
             || server != self.server
         {
             return Err(Error::Invalid("invalid_puppet_identity"));
@@ -296,3 +296,4 @@ impl MatrixClient {
         Ok(())
     }
 }
+#[cfg(test)] #[path = "matrix_client_tests.rs"] mod puppet_tests;
