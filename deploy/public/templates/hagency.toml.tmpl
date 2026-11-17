@@ -1,0 +1,29 @@
+# Rendered by deploy.sh from templates/hagency.toml.tmpl. Do not edit; edit .env.
+listen = "0.0.0.0:8088"
+public_origin = "${PUBLIC_URL}"
+database_url = "postgres://hagency:${POSTGRES_PASSWORD}@postgres:5432/hagency"
+data_dir = "/app/data"
+palpo_config = "palpo.toml"
+pasion_config = "pasion.toml"
+public_dir = "/app/resources/frontend/public"
+
+[queue]
+event_ttl_ms = 86400000
+
+[management]
+administrator = "@${ADMIN_USER}:${SERVER_NAME}"
+enable_project_reservations = true
+enable_parent_settlement = true
+enable_project_setup = true
+enable_agent_admission = ${AGENTS_ENABLED}
+enable_agent_executor = ${AGENTS_ENABLED}
+enable_agent_matrix_provisioning = ${AGENTS_ENABLED}
+enable_agent_runtime_provisioning = ${AGENTS_ENABLED}
+enable_shared_execution = ${AGENTS_ENABLED}
+enable_shared_successors = true
+enable_shared_durable_intake = true
+enable_shared_demands = true
+enable_shared_thread_context = true
+enable_agent_budget_deltas = true
+enable_shared_budget_execution = true
+enable_pool_grant_succession = true

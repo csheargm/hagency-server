@@ -1,0 +1,103 @@
+# Rendered by deploy.sh from templates/Caddyfile.tmpl. Do not edit; edit .env.
+{
+	${CADDY_GLOBAL_TLS}
+	http_port ${HTTP_PORT}
+	https_port ${HTTPS_PORT}
+	order rate_limit before basic_auth
+	${CADDY_TRUSTED_PROXIES}
+}
+
+# Per-client-IP caps (mholt/caddy-ratelimit). Values from .env RL_*; 429 when exceeded.
+(rate_limits) {
+	rate_limit {
+		zone auth {
+			match {
+				path /auth/api/v1/auth/* /auth/login* /auth/register*
+			}
+			key {client_ip}
+			events ${RL_AUTH_PER_MIN}
+			window 1m
+		}
+		zone matrix_auth {
+			match {
+				path_regexp ^/_matrix/client/[^/]+/(login|register)
+			}
+			key {client_ip}
+			events ${RL_AUTH_PER_MIN}
+			window 1m
+		}
+		zone create_room {
+			match {
+				path_regexp ^/_matrix/client/[^/]+/createRoom
+			}
+			key {client_ip}
+			events ${RL_CREATEROOM_PER_HOUR}
+			window 1h
+		}
+		zone send {
+			match {
+				path_regexp ^/_matrix/client/[^/]+/rooms/[^/]+/send/
+			}
+			key {client_ip}
+			events ${RL_SEND_PER_MIN}
+			window 1m
+		}
+		zone media_upload {
+			match {
+				path_regexp ^/_matrix/(media|client)/[^/]+/(upload|media/upload)
+			}
+			key {client_ip}
+			events ${RL_UPLOAD_PER_HOUR}
+			window 1h
+		}
+		zone all {
+			key {client_ip}
+			events ${RL_GENERAL_PER_MIN}
+			window 1m
+		}
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+${DOMAIN} {
+	import security_headers
+	import rate_limits
+	request_body {
+		max_size ${MAX_UPLOAD_SIZE}
+	}
+	# Matrix delegation: federation on 443, clients to this origin.
+	handle /.well-known/matrix/server {
+		header Content-Type application/json
+		respond `{"m.server":"${DOMAIN}:443"}` 200
+	}
+	handle /.well-known/matrix/client {
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		respond `${WELL_KNOWN_CLIENT_JSON}` 200
+	}
+	${CALLS_ROUTE}
+	# Never expose Synapse-style admin or internal metrics paths publicly.
+	handle /_synapse/* {
+		respond 404
+	}
+	# /_matrix (client + federation), /auth (Pasion), /hagency (REST), app.
+	handle {
+		reverse_proxy server:8088
+	}
+}
+
+${ELEMENT_DOMAIN} {
+	import security_headers
+	header X-Frame-Options SAMEORIGIN
+	reverse_proxy element:80
+}
+
+${ROOT_SITE_BLOCK}

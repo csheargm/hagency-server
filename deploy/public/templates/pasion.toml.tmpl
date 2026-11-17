@@ -1,0 +1,14 @@
+# Rendered by deploy.sh from templates/pasion.toml.tmpl. Do not edit; edit .env.
+[database]
+uri = "postgres://hagency:${POSTGRES_PASSWORD}@postgres:5432/pasion"
+[hagency]
+resources_dir = "/app/resources/pasion"
+delegate_matrix_auth = true
+[account]
+password_registration_enabled = ${PASSWORD_REGISTRATION_ENABLED}
+password_registration_contact_required = false
+# invite mode: sign-up needs a one-time token (./deploy.sh invite).
+registration_token_required = ${REGISTRATION_TOKEN_REQUIRED}
+# Pasion's default password strength (zxcvbn 3) and rate limits
+# (3 logins/min, 3 registrations/hour per IP) are kept on purpose.
+${GITHUB_PROVIDER_BLOCK}

@@ -1,0 +1,18 @@
+[[upstream_oauth2.providers]]
+id = "01M7BKN7F5NRSNBNR7P3CEDYGR"
+brand_name = "github"
+human_name = "GitHub"
+client_id = "${GITHUB_CLIENT_ID}"
+client_secret_file = "/run/hagency/config/github-client.secret"
+token_endpoint_auth_method = "client_secret_post"
+discovery_mode = "disabled"
+pkce_method = "never"
+fetch_userinfo = true
+authorization_endpoint = "https://github.com/login/oauth/authorize"
+token_endpoint = "https://github.com/login/oauth/access_token"
+userinfo_endpoint = "https://api.github.com/user"
+scope = "read:user user:email"
+claims_imports.subject.template = "{{ userinfo_claims.id }}"
+claims_imports.localpart = { action = "suggest", template = "{{ userinfo_claims.login }}" }
+claims_imports.displayname = { action = "suggest", template = "{{ userinfo_claims.name or userinfo_claims.login }}" }
+claims_imports.email = { action = "suggest", template = "{{ userinfo_claims.email or '' }}" }

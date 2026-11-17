@@ -1,0 +1,30 @@
+# Rendered by deploy.sh from templates/palpo.toml.tmpl. Do not edit; edit .env.
+server_name = "${SERVER_NAME}"
+allow_registration = false
+trusted_servers = []
+# Caps (from .env). Palpo has no per-user media quota or room-creation limit;
+# createRoom and uploads are capped per IP in Caddy instead.
+max_upload_size = ${MAX_UPLOAD_BYTES}
+max_concurrent_requests = ${PALPO_MAX_CONCURRENT_REQUESTS}
+rc_login = { per_second = 0.003, burst = 5 }
+rc_registration = { per_second = 0.17, burst = 3 }
+rc_message = { per_second = ${PALPO_RC_MESSAGE_PER_SECOND}, burst = ${PALPO_RC_MESSAGE_BURST} }
+# Federation TLS must be valid in public deployments.
+allow_invalid_tls_certificates = false
+[db]
+url = "postgres://hagency:${POSTGRES_PASSWORD}@postgres:5432/palpo"
+pool_size = ${PALPO_DB_POOL_SIZE}
+[well_known]
+client = "${PUBLIC_URL}"
+server = "${DOMAIN}:443"
+${RTC_FOCI_BLOCK}
+# MSC4140 delayed events stay off (Element Call leave bug, see deploy/calls).
+[delayed_events]
+enable = false
+[storage]
+backend = "fs"
+root = "/app/data/media"
+[federation]
+enable = ${FEDERATION_ENABLED}
+# Allowlist; empty = federate with nobody. Comma list in .env FEDERATION_ALLOWLIST.
+allowed_servers = [${FEDERATION_ALLOWED_SERVERS}]
