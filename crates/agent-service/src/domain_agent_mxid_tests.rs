@@ -35,7 +35,19 @@ fn the_documented_example_mints_as_specified() {
     assert_eq!(base_localpart(NS, "@:localhost", "Bob"), "_hagency_user_bob", "empty owner falls back");
     let worst = base_localpart(&"_".repeat(64), &format!("@{}:s", "o".repeat(99)), &"n".repeat(99));
     assert_eq!(worst.len(), 64 + OWNER_PART_MAX + 1 + NAME_PART_MAX, "both parts are capped");
-    assert!(format!("@{worst}-9999:").len() + 64 < 255, "fits a Matrix ID beside a long server name");
+}
+
+#[test]
+fn ids_are_shortened_to_fit_a_long_server_name() {
+    let full = base_localpart(NS, &format!("@{}:s", "o".repeat(30)), &"n".repeat(40));
+    assert_eq!(full.len(), NS.len() + OWNER_PART_MAX + 1 + NAME_PART_MAX);
+    let fitted = fitted_base(NS, &format!("@{}:s", "o".repeat(30)), &"n".repeat(40), 40).unwrap();
+    assert_eq!(fitted, format!("{NS}{}_{}", "o".repeat(24), "n".repeat(40 - NS.len() - 25)), "the name shrinks first");
+    let tiny = fitted_base(NS, "@owner:s", "anna claude", NS.len() + 3).unwrap();
+    assert_eq!(tiny, format!("{NS}o_a"), "then the owner, keeping at least one character each");
+    assert_eq!(fitted_base(NS, "@owner:s", "anna", NS.len() + 2), None);
+    let cut = fitted_base(NS, "@csheargm:s", "anna claude", NS.len() + 8 + 1 + 5).unwrap();
+    assert_eq!(cut, format!("{NS}csheargm_anna"), "a cut never ends on a separator");
 }
 
 #[test]

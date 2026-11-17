@@ -78,14 +78,20 @@ fn a_foreign_namespace_is_never_rewritten_into_ours() {
 }
 
 #[test]
-fn upgrade_is_blocked_by_accounts_people_registered_in_the_widened_gap() {
+fn reservation_is_blocked_by_accounts_people_registered_in_the_widened_gap() {
     let accounts = [
         "@_hagency_service:example.test",
         "@_hagency_agt_01m7k5g5n36gcamvq8f8m07e6n:example.test",
         "@_hagency_bob_x-y:example.test",
+        "@_hagency_ann_helper-2:example.test",
         "@_hagency_x-y:other.test",
         "@alice:example.test",
     ];
-    assert_eq!(newly_reserved(accounts.into_iter(), SERVER), vec!["@_hagency_bob_x-y:example.test".to_owned()]);
-    assert!(newly_reserved(accounts[..2].iter().copied(), SERVER).is_empty());
+    let puppets = std::collections::BTreeSet::from(["@_hagency_ann_helper-2:example.test".to_owned()]);
+    assert_eq!(
+        upgrade::blocking_accounts(accounts.into_iter(), &puppets, SERVER),
+        vec!["@_hagency_bob_x-y:example.test".to_owned()],
+        "only a person's account in the new gap blocks; recorded readable puppets do not"
+    );
+    assert!(upgrade::blocking_accounts(accounts[..2].iter().copied(), &puppets, SERVER).is_empty());
 }

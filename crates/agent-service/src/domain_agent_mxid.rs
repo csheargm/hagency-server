@@ -18,6 +18,10 @@ const NAME_FALLBACK: &str = "agent";
 const PART_SEPARATOR: char = '_';
 /// Highest collision suffix tried before creation is refused.
 const MAX_SUFFIX: u32 = 9999;
+/// Matrix's limit on a whole user ID, in bytes.
+const MATRIX_ID_MAX: usize = 255;
+/// Bytes kept free for the longest collision suffix (`-9999`).
+const SUFFIX_RESERVE: usize = 5;
 /// Advisory-lock class for mint serialisation (two-key space, so it cannot
 /// meet the single-key locks used elsewhere).
 const MINT_LOCK_CLASS: i32 = 0x4147_4d58; // "AGMX"
@@ -53,11 +57,30 @@ pub(crate) fn sanitize_part(raw: &str, cap: usize, fallback: &str) -> String {
 }
 
 /// `<namespace><owner>_<name>`, the localpart before any collision suffix.
+#[cfg(test)]
 pub(crate) fn base_localpart(namespace: &str, owner_mxid: &str, display_name: &str) -> String {
+    fitted_base(namespace, owner_mxid, display_name, usize::MAX).unwrap_or_default()
+}
+
+/// The base shortened (name first, then owner) so it is at most `max_len`
+/// bytes; `None` when not even one character of each part fits.
+pub(crate) fn fitted_base(namespace: &str, owner_mxid: &str, display_name: &str, max_len: usize) -> Option<String> {
     let owner_local = owner_mxid.trim_start_matches('@').split(':').next().unwrap_or_default();
-    let owner = sanitize_part(owner_local, OWNER_PART_MAX, OWNER_FALLBACK);
-    let name = sanitize_part(display_name, NAME_PART_MAX, NAME_FALLBACK);
-    format!("{namespace}{owner}{PART_SEPARATOR}{name}")
+    let mut owner = sanitize_part(owner_local, OWNER_PART_MAX, OWNER_FALLBACK);
+    let mut name = sanitize_part(display_name, NAME_PART_MAX, NAME_FALLBACK);
+    let room = max_len.checked_sub(namespace.len() + PART_SEPARATOR.len_utf8())?;
+    if room < 2 {
+        return None;
+    }
+    // Parts are already sanitised and never start with `-`, so re-sanitising
+    // only truncates, and the first byte is a valid one-character fallback.
+    if owner.len() + name.len() > room {
+        name = sanitize_part(&name, room.saturating_sub(owner.len()).max(1), &name[..1]);
+    }
+    if owner.len() + name.len() > room {
+        owner = sanitize_part(&owner, room - name.len(), &owner[..1]);
+    }
+    Some(format!("{namespace}{owner}{PART_SEPARATOR}{name}"))
 }
 
 /// The base itself, else `base-2`, `base-3`, …, skipping every taken localpart.
@@ -68,7 +91,9 @@ pub(crate) fn first_free(base: &str, taken: &BTreeSet<String>) -> Option<String>
 }
 
 /// Picks the new Agent's puppet ID inside the caller's transaction. The lock
-/// is held until commit, so two creates for the same base cannot both pick it.
+/// is held until commit, so two creates whose candidates overlap cannot both
+/// pick one (today the domain store's single connection also serialises
+/// writers; the lock keeps this true across processes).
 pub(crate) async fn mint(
     db: &mut AsyncPgConnection,
     namespace: &str,
@@ -76,10 +101,18 @@ pub(crate) async fn mint(
     owner_mxid: &str,
     display_name: &str,
 ) -> Result<String> {
-    let base = base_localpart(namespace, owner_mxid, display_name);
+    // `@` + localpart + `-9999` + `:` + server must fit a Matrix ID.
+    let max_local = MATRIX_ID_MAX.saturating_sub(2 + server.len() + SUFFIX_RESERVE);
+    let base = fitted_base(namespace, owner_mxid, display_name, max_local)
+        .ok_or(Error::Invalid("agent_mxid_too_long"))?;
+    // Bases that can share a candidate (`x_anna` + `-2` and `x_anna-2`) always
+    // share the owner part, so one lock per owner part serialises them.
+    let owner_scope = base[namespace.len()..]
+        .find(PART_SEPARATOR)
+        .map_or(base.as_str(), |i| &base[..namespace.len() + i + 1]);
     sql_query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
         .bind::<diesel::sql_types::Integer, _>(MINT_LOCK_CLASS)
-        .bind::<Text, _>(&base)
+        .bind::<Text, _>(owner_scope)
         .execute(db)
         .await?;
     let prefix = format!("@{base}");

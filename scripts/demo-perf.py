@@ -191,7 +191,7 @@ def concierge_run(name):
     def puppet_in(s):
         r = s.get("rooms", {}).get("join", {}).get(room, {})
         for ev in r.get("state", {}).get("events", []) + r.get("timeline", {}).get("events", []):
-            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_agt_") and ev["content"].get("membership") == "join":
+            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_") and not ev.get("state_key", "").startswith("@_hagency_service:") and ev["content"].get("membership") == "join":
                 return ev["state_key"]
     puppet, since2 = wait_for(u["origin"], u["token"], puppet_in, 120)
     if not puppet:

@@ -91,7 +91,7 @@ def triaged():
         return latest
     # A correct triage may point at an existing issue instead of filing a duplicate.
     replies = [e.get("body") or "" for e in hook("ann", "GET", f"/room/messages?room_id={room}&limit=40")["events"]
-               if "_hagency_agt_" in e.get("sender", "") and "Working" not in (e.get("body") or "")]
+               if e.get("sender", "").startswith("@_hagency_") and not e.get("sender", "").startswith("@_hagency_service:") and "Working" not in (e.get("body") or "")]
     found = re.findall(rf"github.com/{REPO}/issues/(\d+)", " ".join(replies))
     return found[-1] if found else None
 new, n = drive("ann", triaged, 400)

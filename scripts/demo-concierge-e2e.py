@@ -118,7 +118,7 @@ def main():
     puppet = None
     def find_puppet(s):
         for ev in s.get("rooms", {}).get("join", {}).get(room, {}).get("state", {}).get("events", []) + s.get("rooms", {}).get("join", {}).get(room, {}).get("timeline", {}).get("events", []):
-            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_agt_") and ev["content"].get("membership") == "join":
+            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_") and not ev.get("state_key", "").startswith("@_hagency_service:") and ev["content"].get("membership") == "join":
                 return ev["state_key"]
     puppet, since = wait_for(a.server, token, find_puppet, 120, None)
     if not puppet:

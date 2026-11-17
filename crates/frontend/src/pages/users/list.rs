@@ -614,7 +614,7 @@ pub fn UserList() -> Element {
                                                                     {t("users.admin")}
                                                                 }
                                                             } else {
-                                                                Badge { variant: BadgeVariant::Secondary, if user_id.starts_with("@_hagency_service:") {"Hagency service"} else if user_id.starts_with("@_hagency_") {"Agent"} else {{t("common.user")}} }
+                                                                Badge { variant: BadgeVariant::Secondary, if user_id.starts_with("@_hagency_service:") {"Hagency service"} else if is_agent_puppet(&user_id) {"Agent"} else {{t("common.user")}} }
                                                             }
                                                         }
                                                     }
@@ -743,4 +743,15 @@ fn sort_indicator(current_sort_by: &str, current_sort_dir: &str, column: &str) -
     } else {
         " \u{2195}" // up-down arrow (neutral)
     }
+}
+
+// TODO(R4): list.rs is over budget; split row rendering (badges, actions) from
+// the page's data loading along that seam.
+/// An Agent puppet in the reserved namespace `^@_hagency_[a-z0-9_-]+:` (ADR 0002);
+/// the service account is matched before this.
+fn is_agent_puppet(user_id: &str) -> bool {
+    user_id
+        .strip_prefix("@_hagency_")
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(local, _)| !local.is_empty() && local.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'))
 }

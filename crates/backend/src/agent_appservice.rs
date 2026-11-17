@@ -10,6 +10,13 @@ use std::{
 
 const ID: &str = "hagency_agents_v1";
 
+#[path = "agent_appservice_upgrade.rs"]
+mod upgrade;
+use upgrade::{
+    LEGACY_USER_LOCALPART, USER_LOCALPART, is_legacy, persist_upgrade, unclaimed_accounts, users_regex,
+    widen_row, with_users_regex,
+};
+
 pub async fn prepare(conf: &Config) -> anyhow::Result<palpo::core::appservice::Registration> {
     let server = conf.matrix.server_name.as_str();
     let path = conf.data_dir.join("agent-appservice.json");
@@ -20,18 +27,16 @@ pub async fn prepare(conf: &Config) -> anyhow::Result<palpo::core::appservice::R
         Some(row) => is_legacy(row, server)?,
         None => false,
     };
-    if legacy_file || legacy_row {
-        // Widening the namespace must not adopt an account a person already holds.
-        let accounts = namespace_accounts(server).await?;
-        let held = newly_reserved(accounts.iter().map(String::as_str), server);
+    if legacy_file || legacy_row || existing.is_none() {
+        // Establishing the reservation must not adopt an account a person holds.
+        let held = unclaimed_accounts(server).await?;
         anyhow::ensure!(
             held.is_empty(),
-            "Agent namespace upgrade blocked: existing accounts {held:?} would become reserved"
+            "Agent namespace reservation blocked: existing accounts {held:?} are not Agents"
         );
     }
     if legacy_file {
         registration = with_users_regex(&registration, &users_regex(server, USER_LOCALPART))?;
-        persist_upgrade(&path, &registration)?;
     }
     match existing {
         Some(existing) => {
@@ -51,83 +56,19 @@ pub async fn prepare(conf: &Config) -> anyhow::Result<palpo::core::appservice::R
                 "Agent Appservice registration conflicts with persisted deployment identity"
             );
             if legacy_row {
-                // Palpo reads registrations from its table on each lookup; a
-                // crash between these two calls re-registers on the next start.
-                palpo::appservice::unregister_appservice(ID).await?;
-                palpo::appservice::register_appservice(registration.clone()).await?;
+                widen_row(server).await?;
             }
         }
         None => {
             palpo::appservice::register_appservice(registration.clone()).await?;
         }
     }
+    if legacy_file {
+        // After the row: a crash in between leaves a legacy file and a wide
+        // row, which the next start reconciles through the same path.
+        persist_upgrade(&path, &registration)?;
+    }
     Ok(registration)
-}
-/// Agent puppet localparts after `_hagency_`: `agt_<ulid>` and readable
-/// `<owner>_<name>[-N]` (ADR 0002). `-` joined the class with readable IDs.
-const USER_LOCALPART: &str = "[a-z0-9_-]+";
-/// The class every registration persisted before readable IDs carries.
-const LEGACY_USER_LOCALPART: &str = "[a-z0-9_]+";
-fn users_regex(server: &str, class: &str) -> String {
-    format!("^@_hagency_{class}:{}$", regex::escape(server))
-}
-fn is_legacy(registration: &palpo::core::appservice::Registration, server: &str) -> anyhow::Result<bool> {
-    let value = serde_json::to_value(registration)?;
-    Ok(value["namespaces"]["users"][0]["regex"] == users_regex(server, LEGACY_USER_LOCALPART))
-}
-fn with_users_regex(
-    registration: &palpo::core::appservice::Registration,
-    regex: &str,
-) -> anyhow::Result<palpo::core::appservice::Registration> {
-    let mut value = serde_json::to_value(registration)?;
-    if let Some(users) = value["namespaces"]["users"].as_array_mut()
-        && users.len() == 1
-    {
-        users[0]["regex"] = json!(regex);
-    }
-    Ok(serde_json::from_value(value)?)
-}
-/// Local accounts the widened namespace would newly claim: they match it but
-/// not the legacy one, so a person (not this Appservice) registered them.
-fn newly_reserved<'a>(users: impl Iterator<Item = &'a str>, server: &str) -> Vec<String> {
-    let (Ok(now), Ok(before)) = (
-        regex::Regex::new(&users_regex(server, USER_LOCALPART)),
-        regex::Regex::new(&users_regex(server, LEGACY_USER_LOCALPART)),
-    ) else {
-        return vec!["<invalid namespace regex>".into()];
-    };
-    users.filter(|u| now.is_match(u) && !before.is_match(u)).map(str::to_owned).collect()
-}
-/// Every account on this server whose localpart contains `_hagency_`.
-async fn namespace_accounts(server: &str) -> anyhow::Result<Vec<String>> {
-    const PAGE: i64 = 1000;
-    let mut found = Vec::new();
-    loop {
-        let filter = palpo::data::user::ListUsersFilter {
-            server_name: Some(server.into()),
-            name: Some("_hagency_".into()),
-            from: Some(found.len() as i64),
-            limit: Some(PAGE),
-            order_by: Some("name".into()),
-            ..Default::default()
-        };
-        let (page, total) = palpo::data::user::list_users(&filter).await?;
-        let fetched = page.len();
-        found.extend(page.into_iter().map(|u| u.id.to_string()));
-        if fetched == 0 || found.len() as i64 >= total {
-            return Ok(found);
-        }
-    }
-}
-/// Replaces the credential file atomically; the tokens are unchanged.
-fn persist_upgrade(path: &Path, registration: &palpo::core::appservice::Registration) -> anyhow::Result<()> {
-    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("missing Appservice directory"))?;
-    let mut file = tempfile::NamedTempFile::new_in(dir)?;
-    file.write_all(&serde_json::to_vec(registration)?)?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
-    std::fs::File::open(dir)?.sync_all()?;
-    Ok(())
 }
 fn load_or_create(
     path: &Path,

@@ -20,6 +20,10 @@ trailers and logs show it wherever a client has no display name.
      characters becomes one `-`, edges trimmed, capped (owner at 24 bytes,
      name at 32). If nothing survives, owner falls back to `user` and name to
      `agent`, so a fully non-ASCII name like `安娜` gives `…_agent`.
+   - On a long server name, the name part shrinks first, then the owner part
+     (each keeps at least one character), so `@<id>-9999:<server>` stays
+     within Matrix's 255 bytes. If even that cannot fit, creation is refused
+     with `agent_mxid_too_long` rather than committing an ID Matrix rejects.
    - The Agent's entity ID stays `agt_<ulid>`. Only the puppet Matrix ID
      changes form.
 2. **Boundary.** The sanitised alphabet is `[a-z0-9-]`, so the single `_`
@@ -28,7 +32,9 @@ trailers and logs show it wherever a client has no display name.
    ways. Owners that sanitise alike (`a_b` and `a-b`) can still produce the
    same base, which the collision rule handles.
 3. **Collisions.** Inside the creating transaction, the server takes
-   `pg_advisory_xact_lock(<mint class>, hashtext(base))`. It then reads every
+   `pg_advisory_xact_lock(<mint class>, hashtext(<namespace><owner>_))`, one
+   lock per owner part: bases that can produce the same candidate (`x_anna`
+   with `-2`, and `x_anna-2`) always share it. It then reads every
    puppet ID starting with that base and picks the base itself, or the first
    free `-2`, `-3`, … up to `-9999`. If all are taken it refuses with
    `agent_name_exhausted`. `agents.puppet_mxid UNIQUE` remains the final
@@ -44,13 +50,20 @@ trailers and logs show it wherever a client has no display name.
    `browser_auth.rs`). The puppet guard in `matrix_client.rs` accepts `-`.
    - **Upgrade.** A deployment whose persisted registration
      (`agent-appservice.json` and Palpo's row) carries the legacy regex
-     upgrades at startup. The file is rewritten atomically with the same
-     tokens, and the Palpo row is re-registered. A disabled registration still
+     upgrades at startup. Palpo's row is widened by one conditional `UPDATE`
+     of its users regex, leaving tokens and the disabled flag untouched, so
+     the reservation is never absent. Then the file is rewritten atomically
+     with the same tokens. A crash between the two leaves a legacy file and a
+     wide row, which the next start reconciles. A disabled registration still
      refuses to start.
-   - **Upgrade guard.** Before widening, the server lists every local
-     account containing `_hagency_`. Startup refuses if any account matches
-     the new regex but not the old one, because a person registered it before
-     it was reserved and the Appservice must not adopt it.
+   - **Reservation guard.** Whenever the reservation is being established
+     (legacy file, legacy row, or no row yet), startup reads every
+     `_hagency_` account on the server. It refuses to start if one matches the
+     new regex but not the old one and is not a recorded Agent puppet: a
+     person registered it before it was reserved, and the Appservice must not
+     adopt it. Accounts created concurrently with that read are not covered.
+     Hagency deployments disable local sign-up and Pasion rejects leading
+     underscores, so none are expected.
    - A foreign namespace is never rewritten.
 5. **Immutability.** The ID is minted once from the initial name. Rename
    changes the display name only, and the existing trigger rejects any

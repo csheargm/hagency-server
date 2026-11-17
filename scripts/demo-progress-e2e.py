@@ -47,7 +47,7 @@ def agent_room(a, token):
     def find_puppet(s):
         r = s.get("rooms", {}).get("join", {}).get(room, {})
         for ev in r.get("state", {}).get("events", []) + r.get("timeline", {}).get("events", []):
-            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_agt_") and ev["content"].get("membership") == "join":
+            if ev.get("type") == "m.room.member" and ev.get("state_key", "").startswith("@_hagency_") and not ev.get("state_key", "").startswith("@_hagency_service:") and ev["content"].get("membership") == "join":
                 return ev["state_key"]
     puppet, _ = wait_for(a.server, token, find_puppet, 120, None)
     return room, puppet or sys.exit("FAIL: the Agent puppet did not join the room")
