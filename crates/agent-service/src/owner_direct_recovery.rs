@@ -66,9 +66,10 @@ impl DomainStore {
             let a = sql_query("UPDATE hagency_agent_v1.agents SET owner_direct_room_id=$2 WHERE id=$1 RETURNING id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility")
                 .bind::<Text, _>(agent).bind::<Text, _>(room).get_result::<Agent>(db).await?;
             sql_query("SELECT set_config('hagency_agent_v1.owner_direct_replaces','',true)").execute(db).await?;
-            let binding = sql_query(format!("INSERT INTO hagency_agent_v1.bindings(id,agent_id,project_id,room_id,state,scope_kind,owner_rejoin_until_ms) VALUES($1,$2,NULL,$3,'joining','owner_direct',$4) RETURNING {BINDING_COLUMNS}"))
+            // The owner's thread setting carries over to the replacement.
+            let binding = sql_query(format!("INSERT INTO hagency_agent_v1.bindings(id,agent_id,project_id,room_id,state,scope_kind,owner_rejoin_until_ms,thread_auto_reply) VALUES($1,$2,NULL,$3,'joining','owner_direct',$4,coalesce((SELECT thread_auto_reply FROM hagency_agent_v1.bindings WHERE agent_id=$2 AND room_id=$5 AND scope_kind='owner_direct'),false)) RETURNING {BINDING_COLUMNS}"))
                 .bind::<Text, _>(format!("bnd_{}", entity_id()?)).bind::<Text, _>(agent).bind::<Text, _>(room)
-                .bind::<BigInt, _>(now + OWNER_REJOIN_GRACE_MS).get_result::<Binding>(db).await?;
+                .bind::<BigInt, _>(now + OWNER_REJOIN_GRACE_MS).bind::<Text, _>(previous).get_result::<Binding>(db).await?;
             Self::audit(db, p, "agent.owner_direct.replace", agent, now).await?;
             Ok(AgentBinding { agent: a, binding })
         }).await

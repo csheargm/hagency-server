@@ -12,6 +12,10 @@ struct Fake {
     invites: Arc<Mutex<Vec<(String, String, String)>>>,
     created: Arc<Mutex<Vec<String>>>,
     left: Arc<Mutex<Vec<String>>>,
+    /// Rooms created encrypted.
+    encrypted: Arc<Mutex<Vec<String>>>,
+    /// The next invite fails: `true` as a Matrix refusal, `false` as unknown.
+    invite_fails: Arc<Mutex<Option<bool>>>,
 }
 fn set_member(state: &mut Vec<Value>, user: &str, membership: &str) {
     state.retain(|e| !(e["type"] == "m.room.member" && e["state_key"] == user));
@@ -45,16 +49,25 @@ impl Fake {
 }
 impl DirectMatrix for Fake {
     async fn invite_owner(&self, puppet: &str, room: &str, owner: &str) -> Result<()> {
+        match self.invite_fails.lock().unwrap().take() {
+            Some(true) => return Err(Error::Conflict("matrix_permission_missing")),
+            Some(false) => return Err(Error::Unavailable("matrix_outcome_unknown")),
+            None => {}
+        }
         self.invites.lock().unwrap().push((puppet.into(), room.into(), owner.into()));
         self.member(room, owner, "invite");
         Ok(())
     }
-    async fn create_owner_direct(&self, agent: &Agent, owner: &str) -> Result<String> {
+    async fn create_owner_direct(&self, agent: &Agent, owner: &str, encrypted: bool) -> Result<String> {
         // Yield while "creating", so a concurrent recovery could overlap here.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let room = format!("!replacement_{}:example.test", crate::secret_token());
-        self.rooms.lock().unwrap().insert(room.clone(), private_room(owner, &agent.puppet_mxid, "invite", "join"));
+        // Nobody is invited at creation; the owner is invited after the swap.
+        self.rooms.lock().unwrap().insert(room.clone(), private_room(owner, &agent.puppet_mxid, "leave", "join"));
         self.created.lock().unwrap().push(room.clone());
+        if encrypted {
+            self.encrypted.lock().unwrap().push(room.clone());
+        }
         Ok(room)
     }
     async fn leave(&self, puppet: &str, room: &str) -> Result<()> {
@@ -117,8 +130,39 @@ async fn postgres_owner_who_left_is_reinvited_to_the_same_room() {
     assert_eq!(f.domain.agent(&f.p, &f.agent, crate::api::now_ms()).await.unwrap().owner_direct_room_id.as_deref(), Some(room.as_str()));
     // Without the grace, the owner's absence still retires the binding.
     let late = crate::api::now_ms() + crate::domain::OWNER_REJOIN_GRACE_MS + 1;
-    let stale = RoomFacts { observed_at_ms: late, ..invited };
+    let stale = RoomFacts { observed_at_ms: late, ..invited.clone() };
     assert!(f.domain.retire_membership_loss_trusted(&binding.id, binding.generation, &stale, late).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_rejoin_grace_ends_once_the_owner_is_back() {
+    let (f, fake, room) = direct().await;
+    let puppet = f.facts.puppet_mxid.clone();
+    fake.member(&room, &f.p.mxid, "leave");
+    assert_eq!(run(&f, &fake).await.unwrap()["outcome"], "reinvited");
+    let binding = direct_bindings(&f).await.remove(0);
+    fake.member(&room, &f.p.mxid, "join");
+    let joined = fake.gateway().room(&room, "", &f.p.mxid, Some(&puppet)).await.unwrap();
+    assert!(!f.domain.retire_membership_loss_trusted(&binding.id, binding.generation, &joined, crate::api::now_ms()).await.unwrap());
+    fake.member(&room, &f.p.mxid, "leave");
+    let left = fake.gateway().room(&room, "", &f.p.mxid, Some(&puppet)).await.unwrap();
+    assert!(f.domain.retire_membership_loss_trusted(&binding.id, binding.generation, &left, crate::api::now_ms()).await.unwrap(),
+        "leaving again after the rejoin counts at once");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_unknown_invite_failure_keeps_the_room_and_a_refusal_replaces_it() {
+    let (f, fake, room) = direct().await;
+    fake.member(&room, &f.p.mxid, "leave");
+    *fake.invite_fails.lock().unwrap() = Some(false);
+    assert!(run(&f, &fake).await.is_err(), "an unknown outcome is reported, not replaced");
+    assert!(fake.created.lock().unwrap().is_empty());
+    *fake.invite_fails.lock().unwrap() = Some(true);
+    let reply = run(&f, &fake).await.unwrap();
+    assert_eq!(reply["outcome"], "replaced", "Matrix refused the puppet: only a new Room helps");
+    assert_ne!(reply["ownerDirectRoomId"], json!(room));
 }
 
 #[tokio::test]
@@ -128,10 +172,14 @@ async fn postgres_agent_gone_assigns_one_new_room_atomically() {
     let puppet = f.facts.puppet_mxid.clone();
     fake.member(&old, &f.p.mxid, "leave");
     fake.member(&old, &puppet, "leave");
+    fake.rooms.lock().unwrap().get_mut(&old).unwrap()
+        .push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let reply = run(&f, &fake).await.unwrap();
     assert_eq!(reply["outcome"], "replaced");
     let new = reply["ownerDirectRoomId"].as_str().unwrap().to_owned();
     assert_eq!(*fake.created.lock().unwrap(), vec![new.clone()]);
+    assert_eq!(*fake.encrypted.lock().unwrap(), vec![new.clone()], "an encrypted chat stays encrypted");
+    assert_eq!(*fake.invites.lock().unwrap(), vec![(puppet.clone(), new.clone(), f.p.mxid.clone())], "the owner is invited after the swap");
     assert_ne!(new, old);
     let agent = f.domain.agent(&f.p, &f.agent, crate::api::now_ms()).await.unwrap();
     assert_eq!(agent.owner_direct_room_id.as_deref(), Some(new.as_str()), "exactly one current owner-direct Room");

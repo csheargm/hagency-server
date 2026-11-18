@@ -10,25 +10,30 @@ use crate::{
     store::Principal,
 };
 use serde_json::{Value, json};
-use std::future::Future;
+use std::{collections::HashMap, future::Future, sync::{Arc, LazyLock, Mutex as StdMutex}};
 
-/// One recovery at a time in this process: a concurrent second call observes
-/// the first call's outcome instead of creating a second replacement Room.
-/// Across processes the domain's compare-and-swap keeps one current Room.
-static RECOVERY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// One recovery at a time per Agent in this process: a concurrent second call
+/// observes the first call's outcome instead of creating a second Room. Across
+/// processes the domain's compare-and-swap keeps one current Room.
+static RECOVERING: LazyLock<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Default::default);
+fn agent_lock(agent: &str) -> Arc<tokio::sync::Mutex<()>> {
+    // A poisoned map only means another recovery panicked; its entries stay valid.
+    let mut locks = RECOVERING.lock().unwrap_or_else(|e| e.into_inner());
+    locks.entry(agent.to_owned()).or_default().clone()
+}
 
 /// The puppet operations recovery needs; tests supply a recording fake.
 pub(crate) trait DirectMatrix: Sync {
     fn invite_owner(&self, puppet: &str, room: &str, owner: &str) -> impl Future<Output = Result<()>> + Send;
-    fn create_owner_direct(&self, agent: &Agent, owner: &str) -> impl Future<Output = Result<String>> + Send;
+    fn create_owner_direct(&self, agent: &Agent, owner: &str, encrypted: bool) -> impl Future<Output = Result<String>> + Send;
     fn leave(&self, puppet: &str, room: &str) -> impl Future<Output = Result<()>> + Send;
 }
 impl DirectMatrix for MatrixClient {
     fn invite_owner(&self, puppet: &str, room: &str, owner: &str) -> impl Future<Output = Result<()>> + Send {
         MatrixClient::invite_owner(self, puppet, room, owner)
     }
-    fn create_owner_direct(&self, agent: &Agent, owner: &str) -> impl Future<Output = Result<String>> + Send {
-        MatrixClient::create_owner_direct(self, agent, owner)
+    fn create_owner_direct(&self, agent: &Agent, owner: &str, encrypted: bool) -> impl Future<Output = Result<String>> + Send {
+        MatrixClient::create_owner_direct(self, agent, owner, encrypted)
     }
     fn leave(&self, puppet: &str, room: &str) -> impl Future<Output = Result<()>> + Send {
         MatrixClient::leave(self, puppet, room)
@@ -50,40 +55,52 @@ pub(crate) async fn recover<M: DirectMatrix>(
     agent: &str,
     now: impl Fn() -> i64,
 ) -> Result<Value> {
-    let _serial = RECOVERY.lock().await;
+    let lock = agent_lock(agent);
+    let _serial = lock.lock().await;
     let (a, binding) = domain.owner_direct_current(p, agent, now()).await?;
     let Some(room) = a.owner_direct_room_id.clone() else { return Ok(outcome("none", None)) };
     let state = binding.as_ref().map(|b| b.state.as_str()).unwrap_or("");
     let live = matches!(state, "joining" | "active" | "suspended");
-    match gateway.owner_direct_room(&room, &p.mxid, &a.puppet_mxid).await? {
+    // A leaving or revoked binding means the puppet is departing: the Room no
+    // longer serves the owner even if they are still in it.
+    let retired = matches!(state, "leaving" | "revoked");
+    let (standing, encrypted) = gateway.owner_direct_room(&room, &p.mxid, &a.puppet_mxid).await?;
+    match standing {
         // The owner can use the Room; the client's adopt call rebinds a left binding.
-        DirectRoom::OwnerJoined => return Ok(outcome("joined", Some(&room))),
-        DirectRoom::OwnerInvited if !matches!(state, "leaving" | "revoked") => {
-            return Ok(outcome("invited", Some(&room)));
-        }
+        DirectRoom::OwnerJoined if !retired => return Ok(outcome("joined", Some(&room))),
+        DirectRoom::OwnerInvited if !retired => return Ok(outcome("invited", Some(&room))),
         DirectRoom::Reinvitable if live => {
             domain.begin_owner_rejoin(p, agent, &room, now()).await?;
-            if matrix.invite_owner(&a.puppet_mxid, &room, &p.mxid).await.is_ok() {
-                return Ok(outcome("reinvited", Some(&room)));
+            match matrix.invite_owner(&a.puppet_mxid, &room, &p.mxid).await {
+                Ok(()) => return Ok(outcome("reinvited", Some(&room))),
+                // Matrix refused the puppet (power or membership changed since
+                // the snapshot): a replacement Room is the only way back.
+                Err(Error::Conflict("matrix_permission_missing")) => {}
+                // Unknown or transient: the invitation may even have landed.
+                // Keep the Room; the next call re-reads its membership.
+                Err(e) => return Err(e),
             }
-            // The puppet could not invite after all (power or membership changed
-            // since the snapshot): a replacement Room is the only way back.
         }
-        // A retired binding means the puppet is leaving or has left: inviting
-        // the owner would land them in a Room the Agent no longer serves.
         _ => {}
     }
-    let created = matrix.create_owner_direct(&a, &p.mxid).await?;
-    match domain.replace_owner_direct(p, agent, &room, &created, now()).await {
-        Ok(_) => Ok(outcome("replaced", Some(&created))),
-        Err(e) => {
-            // The swap was refused, so nothing refers to the new Room: the
-            // puppet leaves it. A failed leave only strands an empty, unused
-            // Room, and the refusal below is what the owner needs to see.
+    // Created without an invitation: the owner is invited only once the swap
+    // committed, so a refused swap never leaves an invitation behind.
+    let created = matrix.create_owner_direct(&a, &p.mxid, encrypted).await?;
+    if let Err(e) = domain.replace_owner_direct(p, agent, &room, &created, now()).await {
+        // The commit may have landed with its reply lost: never leave the Room
+        // the Agent now points at.
+        let current = domain.owner_direct_current(p, agent, now()).await.ok().and_then(|(a, _)| a.owner_direct_room_id);
+        if current.as_deref() != Some(created.as_str()) {
+            // Nothing refers to the new Room. A failed leave only strands an
+            // empty Room nobody is invited to; the refusal is what matters.
             let _ = matrix.leave(&a.puppet_mxid, &created).await;
-            Err(e)
+            return Err(e);
         }
     }
+    // If this invite fails, the binding is live and the puppet joined, so the
+    // next call classifies the Room as reinvitable and invites again.
+    matrix.invite_owner(&a.puppet_mxid, &created, &p.mxid).await?;
+    Ok(outcome("replaced", Some(&created)))
 }
 
 /// Route guard shared with `api.rs`: recovery needs the Appservice client.

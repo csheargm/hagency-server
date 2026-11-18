@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 pub(crate) const OWNER_DIRECT_MARKER: &str = "im.hagency.agent.owner_direct";
 
 /// The createRoom body of a replacement owner-direct Room: invite-only, no
-/// guests, history from join, the owner invited and as powerful as the puppet.
-pub(crate) fn owner_direct_room(agent: &Agent, owner: &str) -> Value {
-    json!({
+/// guests, history from join, the owner as powerful as the puppet, and
+/// encrypted when the Room it replaces was. The owner is invited separately.
+pub(crate) fn owner_direct_room(agent: &Agent, owner: &str, encrypted: bool) -> Value {
+    let mut body = json!({
         "preset": "private_chat",
         "visibility": "private",
         "is_direct": true,
         "name": agent.display_name,
-        "invite": [owner],
         "power_level_content_override": {"users": {agent.puppet_mxid.as_str(): 100, owner: 100}},
         "initial_state": [
             {"type": "m.room.history_visibility", "state_key": "", "content": {"history_visibility": "joined"}},
@@ -25,7 +25,12 @@ pub(crate) fn owner_direct_room(agent: &Agent, owner: &str) -> Value {
             {"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}},
             {"type": OWNER_DIRECT_MARKER, "state_key": "", "content": {"version": 1, "agentId": agent.id, "ownerMxid": owner}},
         ],
-    })
+    });
+    if encrypted {
+        body["initial_state"].as_array_mut().expect("initial_state is an array")
+            .push(json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}));
+    }
+    body
 }
 
 impl MatrixClient {
@@ -35,10 +40,10 @@ impl MatrixClient {
             .await?;
         Ok(())
     }
-    /// The puppet creates a replacement owner-direct Room and invites the owner.
-    pub(crate) async fn create_owner_direct(&self, agent: &Agent, owner: &str) -> Result<String> {
+    /// The puppet creates a replacement owner-direct Room for its owner.
+    pub(crate) async fn create_owner_direct(&self, agent: &Agent, owner: &str, encrypted: bool) -> Result<String> {
         let created = self
-            .call(Method::POST, &["_matrix", "client", "v3", "createRoom"], &agent.puppet_mxid, Some(owner_direct_room(agent, owner)))
+            .call(Method::POST, &["_matrix", "client", "v3", "createRoom"], &agent.puppet_mxid, Some(owner_direct_room(agent, owner, encrypted)))
             .await?;
         created["room_id"]
             .as_str()

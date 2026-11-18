@@ -32,14 +32,19 @@ When the owner leaves that Room, nothing brings them back:
    - `invited`: an invitation is already waiting.
    - `reinvited`: the owner left, was kicked or is absent, the puppet is
      joined, may invite, and the binding is live. The puppet invites the owner
-     back into the same Room.
+     back into the same Room. If Matrix refuses that invite (403), recovery
+     falls through to a replacement. Any other invite error is returned as is:
+     the invite may have landed, and a retry re-reads membership.
    - `replaced`: the Room cannot bring the owner back (the puppet left, the
-     Room was upgraded/tombstoned, it is no longer private, the owner is
-     banned, the puppet lacks invite power, the invite failed, or the binding
-     is already leaving). The puppet creates a new private Room with the
-     owner invited (owner and puppet at power 100, same marker
-     `im.hagency.agent.owner_direct` and history/guest/join rules) and the
-     server swaps it in.
+     Room was upgraded/tombstoned, it is no longer private (join rule, guests,
+     history visibility), the owner is banned, the puppet lacks invite power
+     or was refused, or the binding is already leaving). The puppet creates a
+     new private Room with nobody invited: owner and puppet at power 100, the
+     same marker `im.hagency.agent.owner_direct` and history/guest/join rules,
+     and Megolm encryption if the old Room was encrypted. The server swaps
+     the new Room in, then the puppet invites the owner. A refused swap
+     therefore never leaves an invitation behind. An invite that fails after
+     the swap is retried by the next call, which finds the Room reinvitable.
 
    A state read failure is returned as an error. It never counts as an
    unusable Room, so an outage cannot replace a working chat.
@@ -51,17 +56,21 @@ When the owner leaves that Room, nothing brings them back:
    still refuses every other change. It allows a replacement only when the
    transaction sets `hagency_agent_v1.owner_direct_replaces` to the exact old
    Room, and it never allows clearing the Room.
-4. **Concurrency.** Recovery is serialized per process. A second concurrent
-   call sees the first call's Room with the owner invited and returns
-   `invited`. Across processes, the compare-and-swap lets only one
-   replacement commit. A losing replacement Room is left by the puppet.
+4. **Concurrency.** Recovery is serialized per Agent within a process. A
+   second concurrent call sees the first call's Room with the owner invited
+   and returns `invited`. Across processes, the compare-and-swap lets only one
+   replacement commit. The puppet leaves a losing replacement Room, but only
+   after re-reading that the Agent does not point at it, in case a commit
+   landed and its reply was lost.
 5. **Rejoin grace.** The binding column `owner_rejoin_until_ms` (now plus
    120 s) is set before the re-invite, in the same transaction that checks the
    binding is live, and on the replacement binding. While it lasts, membership
    fencing excuses only the owner's absence, and only while the puppet is
    joined. Without it, the reconciler could retire the binding between the
    invitation and the owner's join. After it expires, ordinary membership-loss
-   rules apply again.
+   rules apply again. The grace also ends as soon as an observation shows
+   the owner joined, so a second departure counts at once. The replacement
+   binding keeps the old binding's thread auto-reply setting.
 6. **Client.** Desktop `ensure` calls `recover` first. It follows the Room the
    server names (the server is authoritative, including after a lost reply)
    and joins it as the owner. Then it runs its usual state validation, `m.direct`
@@ -75,9 +84,9 @@ When the owner leaves that Room, nothing brings them back:
 ## Consequences
 
 - Leaving the private chat is no longer permanent: the Agent's Message button
-  brings the owner back. A replacement Room starts with empty history, and an
-  encrypted old Room's replacement starts unencrypted until the owner turns
-  encryption on again.
+  brings the owner back. A replacement Room starts with empty history. An
+  owner pause on the old binding does not carry over: activation of the new
+  binding clears it, as for any newly adopted owner-direct binding.
 - The old Room's alias `#hagency-agent-<id>` (created with the owner's
   original Room) still points at the old Room. Clients use it only when the
   server knows no Room, which never happens after a replacement.

@@ -24,7 +24,9 @@ pub fn classify(state: &[Value], owner: &str, puppet: &str) -> Result<DirectRoom
     }
     let private = content(state, "m.room.create", "").is_some_and(|c| c["type"] != "m.space")
         && content(state, "m.room.join_rules", "").is_some_and(|c| c["join_rule"] == "invite")
-        && !content(state, "m.room.guest_access", "").is_some_and(|c| c["guest_access"] == "can_join");
+        && !content(state, "m.room.guest_access", "").is_some_and(|c| c["guest_access"] == "can_join")
+        && content(state, "m.room.history_visibility", "")
+            .is_some_and(|c| matches!(c["history_visibility"].as_str(), Some("joined" | "invited" | "shared")));
     if !private {
         return Ok(DirectRoom::Unusable("owner_direct_room_not_private"));
     }
@@ -49,10 +51,12 @@ pub fn classify(state: &[Value], owner: &str, puppet: &str) -> Result<DirectRoom
 }
 
 impl super::Gateway {
-    /// One read of `room`; a read failure is returned, never treated as an
-    /// unusable Room, so a transient outage cannot replace a working chat.
-    pub async fn owner_direct_room(&self, room: &str, owner: &str, puppet: &str) -> Result<DirectRoom> {
-        classify(&self.state(room).await?, owner, puppet)
+    /// One read of `room`: the owner's standing and whether it is encrypted.
+    /// A read failure is returned, never treated as an unusable Room, so a
+    /// transient outage cannot replace a working chat.
+    pub async fn owner_direct_room(&self, room: &str, owner: &str, puppet: &str) -> Result<(DirectRoom, bool)> {
+        let state = self.state(room).await?;
+        Ok((classify(&state, owner, puppet)?, content(&state, "m.room.encryption", "").is_some()))
     }
 }
 
@@ -66,6 +70,7 @@ mod tests {
         let mut state = vec![
             json!({"type":"m.room.create","state_key":"","content":{}}),
             json!({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}}),
+            json!({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"joined"}}),
             json!({"type":"m.room.power_levels","state_key":"","content":{"users":{PUPPET:100},"invite":50}}),
             json!({"type":"m.room.member","state_key":PUPPET,"content":{"membership":puppet}}),
         ];
@@ -94,8 +99,11 @@ mod tests {
         let mut public = room(Some("leave"), "join");
         public[1]["content"]["join_rule"] = json!("public");
         assert_eq!(classify(&public, OWNER, PUPPET).unwrap(), DirectRoom::Unusable("owner_direct_room_not_private"));
+        let mut readable = room(Some("leave"), "join");
+        readable[2]["content"]["history_visibility"] = json!("world_readable");
+        assert_eq!(classify(&readable, OWNER, PUPPET).unwrap(), DirectRoom::Unusable("owner_direct_room_not_private"));
         let mut weak = room(Some("leave"), "join");
-        weak[2]["content"]["users"][PUPPET] = json!(0);
+        weak[3]["content"]["users"][PUPPET] = json!(0);
         assert_eq!(classify(&weak, OWNER, PUPPET).unwrap(), DirectRoom::Unusable("owner_direct_invite_denied"));
     }
 }

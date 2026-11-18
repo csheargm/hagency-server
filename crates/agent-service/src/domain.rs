@@ -1234,7 +1234,10 @@ impl DomainStore {
         // ADR 0003: a recovery invitation is outstanding. Only the owner's
         // absence is excused, and only while the joined puppet waits for them.
         // TODO(R4): domain.rs is over budget; move membership fencing to domain_membership.rs.
-        if s.rejoining && s.active && !f.owner_in_room && f.puppet_in_room
+        if s.rejoining && f.owner_in_room {
+            // The owner is back: later departures count again at once.
+            sql_query("UPDATE hagency_agent_v1.bindings SET owner_rejoin_until_ms=0 WHERE id=$1").bind::<Text,_>(id).execute(db).await?;
+        } else if s.rejoining && s.active && f.puppet_in_room
             && matches!(s.state.as_str(), "joining" | "active" | "suspended")
         {
             return Ok(false);
