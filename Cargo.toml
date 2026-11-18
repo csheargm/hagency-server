@@ -83,6 +83,10 @@ codegen-units = 256
 # TODO(deferred, upstream blocker): .run/ is gitignored, so a clean checkout/CI cannot
 # build with this patch. Replace with the csheargm/palpo topic/sync-wakeup branch (git
 # dependency) or drop it once that lands upstream. Kept: the live demo needs it.
+# Federation fix (2026-11-18): build this patch dir from csheargm/palpo branch
+# fix/fed-visibility-missing-prev (at 7abc2a9c), the deployed copy plus the fix for local
+# appends that stranded an outlier the next event cited (replies invisible across
+# servers, "Missing predecessors could not be recovered").
 [patch."https://github.com/palpo-im/palpo.git"]
 palpo = { path = ".run/palpo-8c1759f/crates/server" }
 palpo-core = { path = ".run/palpo-8c1759f/crates/core" }
