@@ -18,7 +18,11 @@ async fn postgres_a_failure_on_the_run_card_is_the_only_failure_line() {
     let lease = t.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
     let lease = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
     let carded = enqueue(&f, "failed-on-card").await;
-    running(&f, &lease, &carded, "card-run").await;
+    // A card exists only for a started run: an offered dispatch is not retired this way.
+    t.claim_event(&f.p, &lease, &carded, &f.facts, now).await.unwrap();
+    assert!(matches!(t.finish_failed_on_card(&f.p, &lease, &carded, "card-run", now).await, Err(Error::Conflict("execution_not_running"))));
+    t.acknowledge(&f.p, &lease, &carded, now).await.unwrap();
+    t.start_execution(&f.p, &lease, &carded, "card-run", &f.facts, now).await.unwrap();
     // Another device cannot claim the card for this run.
     assert!(t.finish_failed_on_card(&f.second, &lease, &carded, "card-run", now).await.is_err());
     t.finish_failed_on_card(&f.p, &lease, &carded, "card-run", now).await.unwrap();

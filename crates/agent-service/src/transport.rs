@@ -984,6 +984,11 @@ impl TransportStore {
             if !scope.active || scope.binding_generation != e.binding_generation {
                 return Err(Error::Unauthorized("dispatch_scope_revoked"));
             }
+            if on_card && e.execution_id.as_deref() != Some(execution_id) {
+                // A card exists only for a run that started (GPT review): an
+                // unstarted offer is retired by the plain finish alone.
+                return Err(Error::Conflict("execution_not_running"));
+            }
             if e.execution_id.is_none() {
                 // A lost Start RPC may never have reached us. The current fenced
                 // device can retire its offer, without fabricating a started run.

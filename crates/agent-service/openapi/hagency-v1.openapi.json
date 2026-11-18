@@ -4441,7 +4441,7 @@
         "x-source": {
           "file": "crates/agent-service/src/api_transport.rs",
           "anchors": [
-            "\"/hagency/api/v1/execution/events/finish\" =>",
+            "\"/hagency/api/v1/execution/events/finish-on-card\" =>",
             "req.method() != salvo::http::Method::POST"
           ]
         }
@@ -10852,7 +10852,7 @@
   },
   "x-source-sha256": {
     "crates/agent-service/src/api.rs": "39b3361843c733ef4660c3a74f248463b5577ab1b61c01c4b4e28fe0a2a2a851",
-    "crates/agent-service/src/api_transport.rs": "9ae87d89047b45cca5ea1438a7d86898367db111281d61ebe8ac2784bbcc84c8",
+    "crates/agent-service/src/api_transport.rs": "8d422ec13c35c2cd668f7b6f984732aeccf5caf42552ab332fc14344de1582d5",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f"
   },
