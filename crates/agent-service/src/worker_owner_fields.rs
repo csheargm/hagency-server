@@ -3,19 +3,40 @@
 //! owner is their manager) and any write that failed at creation.
 use crate::{domain::DomainStore, matrix_client::MatrixClient};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
-const BATCH: i64 = 20;
+const BATCH: i64 = 5;
+/// The most one tick spends here, so the cleanup loop's other queues are
+/// never held behind slow profile requests (each may take 8 s).
+const TICK_BUDGET: Duration = Duration::from_secs(3);
+/// Confirmed pairs are checked again this often: a value confirmed while an
+/// older homeserver still let the puppet write it must not stay trusted.
+const RECHECK: Duration = Duration::from_secs(3600);
 
-/// One cursor pass per tick. A (puppet, owner) pair confirmed once is not
-/// sent again in this process, so the steady state is one query per tick.
-#[derive(Default)]
+/// Cursor pass over live Agents. A (puppet, owner) pair confirmed within
+/// [`RECHECK`] is skipped, so the steady state is one query per tick.
 pub(crate) struct OwnerFieldSweep {
     cursor: String,
     confirmed: HashSet<(String, String)>,
+    confirmed_since: Instant,
+}
+
+impl Default for OwnerFieldSweep {
+    fn default() -> Self {
+        Self { cursor: String::new(), confirmed: HashSet::new(), confirmed_since: Instant::now() }
+    }
 }
 
 impl OwnerFieldSweep {
     pub(crate) async fn run(&mut self, domain: &DomainStore, matrix: &MatrixClient) {
+        if self.confirmed_since.elapsed() >= RECHECK {
+            self.confirmed.clear();
+            self.confirmed_since = Instant::now();
+        }
+        // Out of budget: the row in flight is retried on the next full pass.
+        let _ = tokio::time::timeout(TICK_BUDGET, self.pass(domain, matrix)).await;
+    }
+    async fn pass(&mut self, domain: &DomainStore, matrix: &MatrixClient) {
         let rows = match domain.owner_field_candidates(&self.cursor, BATCH).await {
             Ok(rows) => rows,
             Err(error) => {
