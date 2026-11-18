@@ -224,6 +224,12 @@ pub(crate) async fn call(
             .await?;
             Ok(json!({"finished":true}))
         }
+        // A failure the executor's run card already shows: no server notice.
+        "/hagency/api/v1/execution/events/finish-on-card" => {
+            let b: Start = body(req).await?;
+            t.finish_failed_on_card(p, &b.lease, &b.dispatch_id, &b.execution_id, now_ms()).await?;
+            Ok(json!({"finished":true}))
+        }
         "/hagency/api/v1/execution/replies" => {
             let b: Reply = body(req).await?;
             let f = facts(t, g, p, &b.reply.dispatch_id).await?;

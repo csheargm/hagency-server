@@ -3,7 +3,7 @@ CREATE OR REPLACE VIEW hagency_agent_v1.request_notice_needed AS
  CASE
   WHEN e.state='unknown' AND r.id IS NULL AND (ps.status_event_id IS NULL OR ps.state='cancelled') AND e.outcome IS NULL AND NOT e.automated THEN 'interrupted'
   WHEN e.state='cancelled' AND e.outcome='unknown' AND e.execution_id IS NULL THEN 'failed'
-  WHEN e.state IN ('completed','cancelled') AND e.outcome IN ('failed','rejected') AND (ps.status_event_id IS NULL OR ps.state='cancelled') THEN e.outcome
+  WHEN e.state IN ('completed','cancelled') AND e.outcome IN ('failed','rejected') AND (ps.status_event_id IS NULL OR ps.state='cancelled') AND NOT (e.outcome='failed' AND (e.failure_on_card OR (e.automated AND e.requester_mxid=u.mxid))) THEN e.outcome
   WHEN e.state='cancelled' AND e.outcome='expired' THEN 'expired'
  END AS kind
  FROM hagency_agent_v1.owner_events e
@@ -17,6 +17,10 @@ CREATE OR REPLACE VIEW hagency_agent_v1.request_notice_needed AS
  -- NULL: the execution device changed). A device that reports `unknown` has
  -- already edited its own run line to "went offline", and an automation's
  -- request (the issue watcher) reports the loss on its tracker line.
+ -- "Failed" likewise: a device whose run card already shows the failure (with
+ -- the policy guidance) reports `finish-on-card`, and an automation's failed
+ -- run (the Agent owner's own: `quiet_reply::OWNER_AUTOMATION`) is reported
+ -- on its tracker line: one failure line per run.
  LEFT JOIN hagency_agent_v1.progress_status ps ON ps.owner_event_id=e.id
  JOIN hagency_agent_v1.request_notice_deployment d ON d.singleton AND e.created_at_ms>=d.since_ms
  JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id AND b.generation=e.binding_generation

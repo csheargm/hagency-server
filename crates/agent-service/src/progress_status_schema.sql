@@ -23,6 +23,10 @@ DO $$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='owner_events' AND column_name='automated') THEN
   ALTER TABLE hagency_agent_v1.owner_events ADD COLUMN automated boolean NOT NULL DEFAULT false;
  END IF;
+ -- The executor's run card already shows this failure (`finish_failed_on_card`): no notice owed.
+ IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='owner_events' AND column_name='failure_on_card') THEN
+  ALTER TABLE hagency_agent_v1.owner_events ADD COLUMN failure_on_card boolean NOT NULL DEFAULT false;
+ END IF;
  IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='progress_status' AND column_name='slow') THEN
   ALTER TABLE hagency_agent_v1.progress_status ADD COLUMN slow boolean NOT NULL DEFAULT false;
  END IF;

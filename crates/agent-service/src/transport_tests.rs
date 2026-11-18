@@ -215,8 +215,12 @@ pub(super) async fn enqueue(f: &Fixture, id: &str) -> String {
     }
 }
 pub(super) async fn running(f: &Fixture, lease: &LeaseRef, id: &str, execution: &str) {
+    running_with(f, &f.facts, lease, id, execution).await
+}
+/// [`running`] for a request another member (`facts.requester_mxid`) sent.
+pub(super) async fn running_with(f: &Fixture, facts: &DeliveryFacts, lease: &LeaseRef, id: &str, execution: &str) {
     f.transport
-        .claim_event(&f.p, lease, id, &f.facts, crate::api::now_ms())
+        .claim_event(&f.p, lease, id, facts, crate::api::now_ms())
         .await
         .unwrap();
     f.transport
@@ -224,7 +228,7 @@ pub(super) async fn running(f: &Fixture, lease: &LeaseRef, id: &str, execution: 
         .await
         .unwrap();
     f.transport
-        .start_execution(&f.p, lease, id, execution, &f.facts, crate::api::now_ms())
+        .start_execution(&f.p, lease, id, execution, facts, crate::api::now_ms())
         .await
         .unwrap();
 }

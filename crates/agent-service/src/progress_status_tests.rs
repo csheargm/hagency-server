@@ -199,28 +199,29 @@ async fn postgres_a_denied_slow_edit_still_leaves_the_failure_notice_owed() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_an_issue_hand_off_gets_no_interim_message_at_all() {
-    use super::super::tests::{event, fixture, running};
+    use super::super::tests::{event, fixture};
     use crate::transport::RouteResult;
     let f = fixture().await;
     let t = &f.transport;
     let now = crate::api::now_ms();
-    let handoff = RoutedEvent { automated: true, ..event(&f, "issue-handoff", true, None) };
-    let RouteResult::Queued { dispatch_id: id } = t.ingest_routed(&f.binding, handoff, &f.facts, now).await.unwrap() else {
+    // The watcher posts from the owner's own account (`quiet_reply::OWNER_AUTOMATION`).
+    let owner = DeliveryFacts { requester_mxid: f.facts.owner_mxid.clone(), ..f.facts.clone() };
+    let handoff = RoutedEvent { automated: true, sender_mxid: owner.requester_mxid.clone(), ..event(&f, "issue-handoff", true, None) };
+    let RouteResult::Queued { dispatch_id: id } = t.ingest_routed(&f.binding, handoff, &owner, now).await.unwrap() else {
         panic!("a hand-off is queued like any request");
     };
     let lease = t.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
     let lease = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
-    running(&f, &lease, &id, "handoff-run").await;
+    super::super::tests::running_with(&f, &owner, &lease, &id, "handoff-run").await;
     let steps = vec!["running `gh pr create`".to_owned()];
-    assert!(!t.record_progress(&f.p, &lease, &id, "handoff-run", &steps, 1, &f.facts, now).await.unwrap(), "no Working… line");
+    assert!(!t.record_progress(&f.p, &lease, &id, "handoff-run", &steps, 1, &owner, now).await.unwrap(), "no Working… line");
     age(&id, now - 300_000).await;
     let later = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS;
     assert!(t.progress_candidates("", later).await.unwrap().iter().all(|s| s.thread_root != "$issue-handoff"));
     assert!(t.request_notice_candidates("", later).await.unwrap().iter().all(|n| n.owner_event_id != id), "no Still working");
-    // The final result still arrives: a failure is reported once.
+    // A failure is reported once, on the tracker's own line (`one_failure_line_tests`).
     t.finish_without_reply(&f.p, &lease, &id, "handoff-run", "failed", later).await.unwrap();
-    let notices = t.request_notice_candidates("", later).await.unwrap();
-    assert_eq!(notices.iter().filter(|n| n.owner_event_id == id).map(|n| n.kind.as_str()).collect::<Vec<_>>(), vec!["failed"]);
+    assert!(t.request_notice_candidates("", later).await.unwrap().iter().all(|n| n.owner_event_id != id));
 }
 
 #[tokio::test]

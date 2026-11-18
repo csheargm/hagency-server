@@ -22,6 +22,8 @@ pub(crate) use puppet_invites::parse_puppet_invite;
 pub use puppet_invites::{PuppetInvite, PuppetInviteEvent};
 #[path = "transport_card_reply.rs"]
 mod card_reply;
+#[path = "transport_quiet_reply.rs"]
+mod quiet_reply;
 pub use card_reply::CardReply;
 #[path = "processing.rs"]
 mod processing;
@@ -948,6 +950,26 @@ impl TransportStore {
         outcome: &str,
         now: i64,
     ) -> Result<()> {
+        self.finish_run(p, reference, id, execution_id, outcome, false, now).await
+    }
+    /// A failed run whose executor's run card already says so (with the
+    /// policy guidance): recorded like any failure, but no server notice is
+    /// owed, so the room gets one failure line (`request_notice_needed`).
+    pub async fn finish_failed_on_card(&self, p: &Principal, reference: &LeaseRef, id: &str, execution_id: &str, now: i64) -> Result<()> {
+        self.finish_run(p, reference, id, execution_id, "failed", true, now).await
+    }
+    // TODO(R4): transport.rs is over budget; the run-finish path (finish_run and its wrappers) belongs in its own transport_finish.rs.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_run(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        id: &str,
+        execution_id: &str,
+        outcome: &str,
+        on_card: bool,
+        now: i64,
+    ) -> Result<()> {
         if !matches!(outcome, "rejected" | "failed" | "unknown") {
             return Err(Error::Invalid("invalid_execution_outcome"));
         }
@@ -984,7 +1006,7 @@ impl TransportStore {
             if e.state != "running" || e.execution_id.as_deref() != Some(execution_id) {
                 return Err(Error::Conflict("execution_not_running"));
             }
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state=$1,outcome=$2 WHERE id=$3")
+            sql_query("UPDATE hagency_agent_v1.owner_events SET state=$1,outcome=$2,failure_on_card=$4 WHERE id=$3")
                 .bind::<Text, _>(if outcome == "unknown" {
                     "unknown"
                 } else {
@@ -992,6 +1014,7 @@ impl TransportStore {
                 })
                 .bind::<Text, _>(outcome)
                 .bind::<Text, _>(id)
+                .bind::<diesel::sql_types::Bool, _>(on_card)
                 .execute(db)
                 .await?;
             Ok(())
@@ -1024,8 +1047,11 @@ impl TransportStore {
             if let Some(old)=old {if old.payload_digest!=digest {return Err(Error::Conflict("reply_payload_changed"));}return Ok(old);}
             if e.state!="running"||e.execution_id.as_deref()!=Some(&request.execution_id) {return Err(Error::Conflict("execution_not_running"));}
             let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&e.id));
-            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,'pending',$14)")
-                .bind::<Text,_>(&id).bind::<Text,_>(&e.id).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).execute(db).await?;
+            // An automation's request (`automated_requests`) is answered on its
+            // tracker's lines: the reply is kept, recorded sent, and never posted.
+            let (state,quiet_event)=quiet_reply::disposition(db,&e).await?;
+            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms,matrix_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$15,$14,$16)")
+                .bind::<Text,_>(&id).bind::<Text,_>(&e.id).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).bind::<Text,_>(state).bind::<Nullable<Text>,_>(quiet_event).execute(db).await?;
             sql_query("UPDATE hagency_agent_v1.owner_events SET state='completed',outcome='replied' WHERE id=$1").bind::<Text,_>(&e.id).execute(db).await?;
             Self::reply(db,&id).await
         }).await
@@ -1114,8 +1140,9 @@ impl TransportStore {
             }
             if event.state!="unknown" {return Err(Error::Conflict("execution_not_reconcilable"));}
             let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&event.id));
-            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)")
-                .bind::<Text,_>(&id).bind::<Text,_>(&event.id).bind::<Text,_>(&event.agent_id).bind::<Text,_>(&event.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&event.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(event.binding_generation).bind::<BigInt,_>(event.dispatch_epoch.unwrap()).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).execute(db).await?;
+            let (state,quiet_event)=quiet_reply::disposition(db,&event).await?;
+            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms,matrix_event_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16,$15,$17)")
+                .bind::<Text,_>(&id).bind::<Text,_>(&event.id).bind::<Text,_>(&event.agent_id).bind::<Text,_>(&event.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&event.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(event.binding_generation).bind::<BigInt,_>(event.dispatch_epoch.unwrap()).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).bind::<Text,_>(state).bind::<Nullable<Text>,_>(quiet_event).execute(db).await?;
             // Keep the execution unknown. Known text is not evidence resolving tool
             // effects or model accounting, and cannot start/settle that execution.
             sql_query("UPDATE hagency_agent_v1.owner_events SET outcome='known_reply_reconciled' WHERE id=$1")
@@ -1428,3 +1455,6 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_room_human_tests.rs"]
 mod room_human_tests;
+#[cfg(test)]
+#[path = "transport_one_failure_line_tests.rs"]
+mod one_failure_line_tests;
