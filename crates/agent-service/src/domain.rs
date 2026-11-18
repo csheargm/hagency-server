@@ -31,6 +31,9 @@ mod execution_configuration;
 mod execution_devices;
 #[path = "owner_direct.rs"]
 mod owner_direct;
+#[path = "owner_direct_recovery.rs"]
+mod owner_direct_recovery;
+pub use owner_direct_recovery::OWNER_REJOIN_GRACE_MS;
 #[path = "shared_rooms.rs"]
 mod shared_rooms;
 pub(crate) use execution_devices::require_assigned;
@@ -572,6 +575,7 @@ impl DomainStore {
 
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
             db.batch_execute(include_str!("room_human_schema.sql")).await?;
+            db.batch_execute(include_str!("owner_direct_recovery_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
@@ -1213,9 +1217,11 @@ impl DomainStore {
             generation: i64,
             #[diesel(sql_type=Bool)]
             active: bool,
+            #[diesel(sql_type=Bool)]
+            rejoining: bool,
         }
-        let s = sql_query("SELECT a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,b.room_id,coalesce(p.space_id,'') AS space_id,b.state,b.generation,(u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
-            .bind::<Text,_>(id).get_result::<Scope>(db).await.map_err(hidden)?;
+        let s = sql_query("SELECT a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,b.room_id,coalesce(p.space_id,'') AS space_id,b.state,b.generation,(u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(b.scope_kind='owner_direct' AND b.owner_rejoin_until_ms>$2) AS rejoining FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
+            .bind::<Text,_>(id).bind::<BigInt,_>(now).get_result::<Scope>(db).await.map_err(hidden)?;
         fresh(f.observed_at_ms, now)?;
         if generation.is_some_and(|g| g != s.generation)
             || f.owner_mxid != s.owner_mxid
@@ -1224,6 +1230,14 @@ impl DomainStore {
             || f.space_id != s.space_id
         {
             return Err(Error::Conflict("stale_membership_observation"));
+        }
+        // ADR 0003: a recovery invitation is outstanding. Only the owner's
+        // absence is excused, and only while the joined puppet waits for them.
+        // TODO(R4): domain.rs is over budget; move membership fencing to domain_membership.rs.
+        if s.rejoining && s.active && !f.owner_in_room && f.puppet_in_room
+            && matches!(s.state.as_str(), "joining" | "active" | "suspended")
+        {
+            return Ok(false);
         }
         // Missing puppet membership is normal before JOIN, but not after the
         // trusted provisioner completed it and requests final activation.

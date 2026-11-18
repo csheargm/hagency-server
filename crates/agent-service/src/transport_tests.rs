@@ -1763,6 +1763,9 @@ mod execution_device_tests;
 #[path = "owner_direct_tests.rs"]
 mod owner_direct_tests;
 
+#[path = "owner_direct_recovery_tests.rs"]
+mod owner_direct_recovery_tests;
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_processing_reaction_is_fixed_durable_and_lease_fenced() {

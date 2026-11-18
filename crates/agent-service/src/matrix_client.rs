@@ -296,4 +296,5 @@ impl MatrixClient {
         Ok(())
     }
 }
+#[path = "matrix_client_owner_direct.rs"] mod owner_direct;
 #[cfg(test)] #[path = "matrix_client_tests.rs"] mod puppet_tests;

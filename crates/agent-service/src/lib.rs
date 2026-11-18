@@ -5,6 +5,7 @@ mod api_agent_rename;
 #[cfg(test)]
 mod api_agent_rename_tests;
 mod api_configuration;
+mod api_owner_direct;
 #[cfg(test)]
 mod api_discovery_tests;
 mod api_management;

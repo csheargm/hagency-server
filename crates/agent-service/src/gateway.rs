@@ -7,6 +7,10 @@ use crate::{
 };
 use serde_json::Value;
 use std::{future::Future, pin::Pin, sync::Arc};
+// TODO(R4): gateway.rs is over budget; split the power-level helpers into gateway_powers.rs.
+#[path = "gateway_owner_direct.rs"]
+mod owner_direct;
+pub use owner_direct::{DirectRoom, classify as classify_owner_direct};
 
 pub type ReadState =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + Send>> + Send + Sync>;

@@ -996,6 +996,7 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
             "global-agent-identity-v2",
             "execution-device-v1",
             "owner-direct-v1",
+            "owner-direct-recovery-v1",
             "agent-e2ee-device-v1",
             "shared-agent-e2ee-v1",
             "processing-reaction-v1",
