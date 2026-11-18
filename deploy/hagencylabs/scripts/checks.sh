@@ -11,17 +11,19 @@ warn() { printf '  WARN %s\n' "$1"; }
 
 # curl through THIS host's Caddy, with real certificate validation, regardless
 # of where public DNS points (first deploy, or DNS not switched yet).
+# CHECK_INSECURE=1 (only for ACME_CA = Let's Encrypt staging) skips verification.
 local_curl() {
+  local k=(); [ "${CHECK_INSECURE:-0}" = 1 ] && k=(-k)
   curl -fsS --max-time 15 --resolve "$SERVER_NAME:443:127.0.0.1" --resolve "$DOMAIN:443:127.0.0.1" \
-    --resolve "$ELEMENT_DOMAIN:443:127.0.0.1" ${CHECK_INSECURE:+-k} "$@"
+    --resolve "$ELEMENT_DOMAIN:443:127.0.0.1" ${k[@]+"${k[@]}"} "$@"
 }
 
 # expect <name> <url> <fixed string the body must contain>; retries while
 # Caddy obtains certificates on a first start.
 expect() {
-  local name="$1" url="$2" want="$3" body="" i
+  local name="$1" url="$2" want="$3" body="" i; shift 3
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    body="$(local_curl "$url" 2>/dev/null || true)"
+    body="$(local_curl "$@" "$url" 2>/dev/null || true)"
     case "$body" in *"$want"*) pass "$name"; return 0;; esac
     [ "$i" = 10 ] || sleep 6
   done
@@ -33,6 +35,8 @@ check_endpoints() {
   expect "server name delegation" "https://$SERVER_NAME/.well-known/matrix/server" "\"m.server\":\"$DOMAIN:443\""
   expect "client discovery" "https://$SERVER_NAME/.well-known/matrix/client" "\"base_url\":\"$PUBLIC_URL\""
   expect "federation API version" "$PUBLIC_URL/_matrix/federation/v1/version" '"server"'
+  # Peers following the delegation send Host: <DOMAIN>:443 (spec, server discovery).
+  expect "federation via delegated Host:port" "$PUBLIC_URL/_matrix/federation/v1/version" '"server"' -H "Host: $DOMAIN:443"
   expect "server signing key" "$PUBLIC_URL/_matrix/key/v2/server" "\"server_name\":\"$SERVER_NAME\""
   expect "accounts (Pasion) issuer" "$PUBLIC_URL/auth/.well-known/openid-configuration" '"issuer"'
   expect "Element Web config" "$ELEMENT_URL/config.json" "$PUBLIC_URL"
@@ -44,7 +48,13 @@ check_dns() {
   for name in "$SERVER_NAME" "$DOMAIN" "$ELEMENT_DOMAIN"; do
     got="$(getent ahostsv4 "$name" 2>/dev/null | awk 'NR==1{print $1}' || true)"
     if [ "$got" = "${HOST_PUBLIC_IP:-}" ]; then pass "DNS $name -> $got"; else warn "DNS $name -> ${got:-nothing}, expected ${HOST_PUBLIC_IP:-unset}"; fi
+    # An AAAA record pointing elsewhere sends IPv6 peers and browsers to another host.
+    got="$(getent ahostsv6 "$name" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    case "$got" in ""|::ffff:*) ;; *) warn "DNS $name has AAAA $got: make sure it is this host";; esac
   done
+  # Same request over real DNS (not forced to loopback): what the world sees.
+  if curl -fsS --max-time 15 "$PUBLIC_URL/_matrix/client/versions" 2>/dev/null | grep -q '"versions"'; then
+    pass "public path $PUBLIC_URL"; else warn "public path $PUBLIC_URL not answering via DNS"; fi
 }
 
 # Outbound federation: ask our own server (as notary) for each allowlisted

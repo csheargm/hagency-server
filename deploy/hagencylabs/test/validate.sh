@@ -51,13 +51,14 @@ for env in staging production; do
 done
 
 render_env() { # env -> renders into $WORK/rendered-<env>
-  ( set -euo pipefail; . "$WORK/scripts/lib.sh"; load_env "$1"; validate_env; render_runtime "$WORK/rendered-$1" )
+  ( set -euo pipefail; . "$WORK/scripts/lib.sh"; load_env "$1"; validate_env; use_release testtag
+    render_runtime "$WORK/rendered-$1" )
 }
 for env in staging production; do
   if render_env "$env"; then ok "$env renders"; else bad "$env renders"; continue; fi
   d="$WORK/rendered-$env"
   check "$env hagency.toml has public_origin" grep -q '^public_origin = "https://matrix\.' "$d/config/hagency.toml"
-  check "$env no placeholder left" bash -c "! grep -rq '\\\${[A-Z0-9_]*}' '$d'"
+  check "$env no placeholder left" bash -c "! grep -rq '\\\${[A-Z0-9_]*}' '$d/config' '$d/Caddyfile' '$d/element-config.json'"
   for t in hagency palpo pasion; do
     check "$env $t.toml parses" python3 -I -c "import tomllib,sys; tomllib.load(open(sys.argv[1],'rb'))" "$d/config/$t.toml"
   done
@@ -82,6 +83,14 @@ if guard staging; then ok "staging env valid"; else bad "staging env valid"; fi
 for env in staging production; do
   if ( . "$WORK/scripts/lib.sh"; load_env "$env"; use_release testtag; RELEASE_DIR="$WORK/rendered-$env"; export RELEASE_DIR
        compose --profile calls config -q ); then ok "$env compose config"; else bad "$env compose config"; fi
+done
+
+# Secrets must not reach child processes or compose inputs.
+for env in staging production; do
+  check "$env secrets not exported to children" bash -c ". '$WORK/scripts/lib.sh'; load_env $env; ! env | grep -q '^POSTGRES_PASSWORD='"
+  pw="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$WORK/secrets/$env.env")"
+  check "$env compose.env holds no secret" bash -c "! grep -qF '$pw' '$WORK/rendered-$env/compose.env' '$WORK/rendered-$env/docker-compose.yml' '$WORK/rendered-$env/profiles'"
+  check "$env snapshot never overwritten" bash -c "! ( . '$WORK/scripts/lib.sh'; load_env $env; use_release testtag; render_runtime '$WORK/rendered-$env' )"
 done
 
 if [ -n "${VALIDATE_CADDY_IMAGE:-}" ]; then

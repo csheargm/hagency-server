@@ -28,45 +28,53 @@ confirm_production() {
   read -r answer; [ "$answer" = "$SERVER_NAME" ] || die "not confirmed"
 }
 
-# Gate: the tag must already have passed staging, unless explicitly overridden.
+# Gate: the tag must already have passed staging with these exact image bytes,
+# unless explicitly overridden. Runs after the images are on this host.
 require_staged() {
   [ "$ENV_NAME" = production ] || return 0
+  [ "${ALLOW_UNSTAGED:-0}" = 1 ] && { log "ALLOW_UNSTAGED=1: skipping the staging sign-off check"; return 0; }
   local marker="$BUNDLE/state/promoted/$1"
-  [ -f "$marker" ] || [ "${ALLOW_UNSTAGED:-0}" = 1 ] \
-    || die "tag $1 has no staging sign-off ($marker). Run './promote.sh $1' after staging passes, or ALLOW_UNSTAGED=1"
+  [ -f "$marker" ] || die "tag $1 has no staging sign-off ($marker). Run './promote.sh $1' after staging passes"
+  grep -qx "server_id=$(image_id "$(server_image "$1")")" "$marker" \
+    || die "the local $1 server image is not the one that was promoted (compare $marker)"
+}
+
+# Stop the running release and back it up; on failure restart it and stop.
+pre_deploy_backup() {
+  local current="$1" tag="$2"
+  use_record "$current"
+  log "stopping server for a consistent pre-deploy backup (downtime starts)"
+  compose stop server >/dev/null || die "cannot stop the running server"
+  if ! BACKUP="$(backup_now "pre-$tag")"; then
+    activate || true
+    die "pre-deploy backup failed; $(release_tag "$current") restarted, nothing deployed"
+  fi
+  log "backup: $BACKUP"
 }
 
 cmd_deploy() {
-  local tag="$1" archive="$2" current backup="" record choice
+  local tag="$1" archive="$2" current choice
   valid_tag "$tag" || die "--tag is required (see build-image.sh)"
-  require_staged "$tag"; confirm_production "$tag"; with_lock
-  obtain_images "$tag" "$archive"
-  record="$(new_release "$tag")"; use_record "$record"
+  confirm_production "$tag"; with_lock
+  obtain_images "$tag" "$archive"; require_staged "$tag"
+  new_release "$tag"; local record="$RECORD"; use_record "$record"
   log "release $record"
   bootstrap_once
-  current="$(state_get current)"
-  if [ -n "$current" ] && [ "${SKIP_BACKUP:-0}" != 1 ]; then
-    use_record "$current"
-    log "stopping server for a consistent pre-deploy backup (downtime starts)"
-    compose stop server >/dev/null
-    if ! backup="$(backup_now "pre-$tag")"; then
-      activate; die "pre-deploy backup failed; $(release_tag "$current") restarted, nothing deployed"
-    fi
-    log "backup: $backup"
-    state_set last_backup "$backup"
-    use_record "$record"
-  fi
-  activate
+  current="$(state_get current)"; BACKUP=""
+  if [ -n "$current" ] && [ "${SKIP_BACKUP:-0}" != 1 ]; then pre_deploy_backup "$current" "$tag"; fi
+  use_record "$record"
   # shellcheck disable=SC2119 # run_checks takes an optional flag, not our args
-  if run_checks; then
+  if activate && run_checks; then
     [ -z "$current" ] || state_set previous "$current"
     state_set current "$record"; prune_releases
     log "deployed $tag to $ENV_NAME"; return 0
   fi
   [ -n "$current" ] || die "first deploy of $tag failed and there is no previous release; containers left for inspection"
-  choice="$(decide_db_restore "$backup")"
-  rollback_to "$current" "$backup" "$choice" || true
-  die "deploy of $tag failed health checks; rolled back to $(release_tag "$current")"
+  choice="$(decide_db_restore "$BACKUP")"
+  if rollback_to "$current" "$BACKUP" "$choice"; then
+    die "deploy of $tag failed; rolled back to $(release_tag "$current") (healthy)"
+  fi
+  die "deploy of $tag failed AND the rollback to $(release_tag "$current") is unhealthy: act now (RUNBOOK section 8)"
 }
 
 cmd_invite() {
@@ -92,7 +100,8 @@ main() {
   case "${1:-}" in invite|status|logs) sub="$1"; shift;; esac
   case "$sub" in
     invite) cmd_invite "$@"; return;;
-    status) use_record "$(state_get current)"; compose ps; echo "current: $(state_get current)"; echo "previous: $(state_get previous)"; return;;
+    status) use_record "$(state_get current)"; compose ps; echo "current: $(state_get current)"; echo "previous: $(state_get previous)"
+            echo "images:"; sed 's/^/  /' "$RELEASE_DIR/images.txt"; return;;
     logs) use_record "$(state_get current)"; compose logs --tail 200 "$@"; return;;
   esac
   while [ $# -gt 0 ]; do

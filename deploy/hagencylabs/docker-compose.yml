@@ -32,7 +32,9 @@ services:
       - ../databases.sql:/docker-entrypoint-initdb.d/20-components.sql:ro
     networks: [db]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hagency -d hagency"]
+      # TCP, not the socket: the image's init-time server listens on the socket
+      # only, so this passes only after initdb scripts (databases.sql) finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U hagency -d hagency"]
       interval: 5s
       timeout: 3s
       retries: 30

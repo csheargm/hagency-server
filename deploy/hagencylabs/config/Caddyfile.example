@@ -43,7 +43,20 @@
 			events ${RL_UPLOAD_PER_HOUR}
 			window 1h
 		}
+		# Federation gets its own, larger bucket: one busy peer (or many users
+		# behind one NAT) must not starve the other side, and vice versa.
+		zone federation {
+			match {
+				path /_matrix/federation/* /_matrix/key/*
+			}
+			key {client_ip}
+			events ${RL_FEDERATION_PER_MIN}
+			window 1m
+		}
 		zone all {
+			match {
+				not path /_matrix/federation/* /_matrix/key/*
+			}
 			key {client_ip}
 			events ${RL_GENERAL_PER_MIN}
 			window 1m

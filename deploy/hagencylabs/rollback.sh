@@ -3,7 +3,7 @@
 # tag + its exact config snapshot), optionally restoring the databases.
 #   ./rollback.sh <env>                         previous release, databases kept
 #   ./rollback.sh <env> --restore-db [<backup>] also restore databases + server-data
-#                                               (default backup: the last pre-deploy one)
+#                                               (default: newest backup taken while that release ran)
 #   ./rollback.sh <env> --list                  releases and backups on this host
 # Restoring the databases loses everything written after that backup. It is
 # needed when the newer release migrated a schema the older one cannot read.
@@ -29,17 +29,21 @@ main() {
   local choice=keep backup="" current previous
   case "${1:-}" in
     --list) list; return;;
-    --restore-db) choice=restore; backup="${2:-$(state_get last_backup)}"; [ -n "$backup" ] || die "no backup recorded; pass one (see --list)";;
+    --restore-db) choice=restore; backup="${2:-}";;
     "") ;;
     *) die "unknown option $1";;
   esac
+  with_lock   # before reading state: a concurrent deploy cannot move the pointers
   current="$(state_get current)"; previous="$(state_get previous)"
   [ -n "$previous" ] || die "no previous release recorded for $ENV_NAME"
+  if [ "$choice" = restore ] && [ -z "$backup" ]; then
+    backup="$(newest_backup_for "$previous")"
+    [ -n "$backup" ] || die "no backup taken while $(release_tag "$previous") ran; pass one (see --list)"
+  fi
   if [ "$ENV_NAME" = production ] && [ -t 0 ]; then
     printf 'Roll PRODUCTION back from %s to %s (databases: %s)? [y/N] ' "$(release_tag "$current")" "$(release_tag "$previous")" "$choice" >&2
     read -r a; case "$a" in y|Y|yes) ;; *) die "not confirmed";; esac
   fi
-  with_lock
   rollback_to "$previous" "$backup" "$choice" || die "rollback finished unhealthy"
   state_set previous "$current"; state_set current "$previous"
   log "current release is now $(release_tag "$previous")"

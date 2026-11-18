@@ -151,11 +151,15 @@ Staging sign-off (all on staging, before promotion):
 On alpha, with the same archive:
 ```bash
 cd /opt/hagencylabs/deploy/hagencylabs
-./promote.sh <tag>                     # human gate: records who signed off, refuses without a terminal
-./deploy.sh production --tag <tag> --image-archive dist/hagencylabs-<tag>.tar.gz   # asks you to type hagencylabs.xyz
+gunzip -c dist/hagencylabs-<tag>.tar.gz | docker load
+./promote.sh <tag>      # human gate: prints the server image ID, records who signed off
+./deploy.sh production --tag <tag>   # asks you to type hagencylabs.xyz
 ```
-`deploy.sh production` refuses a tag without the promotion record (`ALLOW_UNSTAGED=1`
-overrides, for emergencies only). Phase 3 replaces the manual copy with CI building once
+`promote.sh` shows the local server image ID; it must equal the `server=` line of
+`./deploy.sh staging status` on beta (image IDs survive `docker save`/`load`).
+`deploy.sh production` refuses a tag without a promotion record for those exact image
+bytes (`ALLOW_UNSTAGED=1` overrides, for emergencies only). Every release also records its
+image IDs, and rollback refuses if the tag now names different bytes. Phase 3 replaces the manual copy with CI building once
 and a room-side approval writing the promotion record.
 
 ## 8. Rollback
@@ -174,7 +178,7 @@ and a room-side approval writing the promotion record.
 | What | When | Where |
 |---|---|---|
 | Pre-deploy (server stopped, consistent across all three DBs) | every deploy | `/var/backups/hagencylabs/<env>/<UTC>-pre-<tag>/` |
-| Nightly (server running, consistent per database) | cron `17 3 * * *` `./backup.sh production` | `.../<UTC>-nightly/` |
+| Nightly (server running, consistent per database; skipped while a deploy holds the lock) | `ubuntu` user crontab (not root) `17 3 * * *` `./backup.sh production` | `.../<UTC>-nightly/` |
 | Off-host | set `BACKUP_AGE_RECIPIENT`; each backup also writes `offsite/<name>.tar.age`; ship with `aws s3 cp` or `rsync` | owner's choice (3d) |
 | Docker volumes / EBS | weekly EBS snapshot of each host's root volume (AWS Data Lifecycle Manager) | AWS (owner) |
 
@@ -186,7 +190,7 @@ would hold one identity).
 
 ## 10. Monitoring
 
-- `*/5 * * * * /opt/hagencylabs/deploy/hagencylabs/check.sh production --alert` posts
+- `ubuntu` user crontab: `*/5 * * * * /opt/hagencylabs/deploy/hagencylabs/check.sh production --alert` posts
   failures (checks, unhealthy/restarting containers, disk over 85 %) to `ALERT_WEBHOOK_URL`
   (e.g. a Slack or Matrix webhook, kept in `secrets/`).
 - External uptime monitor on `/_matrix/client/versions` (owner, 3e).
@@ -209,6 +213,8 @@ would hold one identity).
 - Pasion `trusted_proxies` (blocker 2). Pasion is also slated for removal (productization
   direction); this stack keeps it because the deployed server still uses it.
 - One Postgres superuser (`hagency`) owns all three databases; split roles later.
+- `POSTGRES_PASSWORD` only takes effect when the `pgdata` volume is created; rotating it
+  later needs `ALTER ROLE hagency PASSWORD ...` first, then the secrets file and a redeploy.
 - `invite` mode: tokens are written straight into Pasion's table (`./deploy.sh production invite 5`);
   entering a token in the desktop sign-up is untested.
 - The server image build has not run past the sources stage yet (blocker 1).
@@ -226,6 +232,16 @@ would hold one identity).
   `docker compose config` resolves for both; `caddy validate` passes on both rendered
   Caddyfiles with the built Caddy image.
 - `docker buildx build --check`: no warnings. Caddy image built (native arch).
+- GPT review (Codex) of the first commit: 12 findings, all adopted in the second commit
+  (restore loads into `<db>_restore` before replacing live data and dies on any failed
+  step; failed `compose up` now triggers rollback; rollback restores only a backup taken
+  under that release and takes the lock first; image IDs recorded per release and per
+  promotion; secrets no longer exported and compose runs with an empty environment from
+  the release's own compose file/env/profiles; nightly backup locked and fails loudly;
+  Postgres health over TCP; snapshot render cannot half-succeed or overwrite; BRAND and
+  LiveKit values validated; `CHECK_INSECURE` only on `=1`, Host:port and public-DNS
+  checks; federation has its own Caddy rate bucket). LiveKit's secret still sits in that
+  container's environment (the service has no file option): accepted.
 - `--target sources`: Palpo `7abc2a9c` fetched by commit from `csheargm/palpo`; Pasion failed
   with `upload-pack: not our ref f17b381…`, which is blocker 1. The server image was
   therefore **not** built or run; nothing past the sources stage is proven yet.

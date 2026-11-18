@@ -25,9 +25,11 @@ load_env() {
   set -a
   # shellcheck disable=SC1090
   . "$ENV_FILE"
+  set +a
+  # Secrets stay unexported shell variables: no child process (docker, curl)
+  # inherits them. render_runtime exports them only inside its own subshell.
   # shellcheck disable=SC1090
   . "$SECRETS_FILE"
-  set +a
   [ "${DEPLOY_ENV:-}" = "$ENV_NAME" ] || die "$ENV_FILE says DEPLOY_ENV=${DEPLOY_ENV:-unset}, not $ENV_NAME"
   RUNTIME="$BUNDLE/runtime/$ENV_NAME"; STATE="$BUNDLE/state/$ENV_NAME"
   BACKUPS="${BACKUP_DIR:-$BUNDLE/backups}/$ENV_NAME"
@@ -62,7 +64,7 @@ validate_options() {
   case "$IMAGE_SOURCE" in pull|local) ;; *) die "IMAGE_SOURCE must be pull|local";; esac
   case "$ROLLBACK_DB" in ask|restore|keep) ;; *) die "ROLLBACK_DB must be ask|restore|keep";; esac
   for v in AGENTS_ENABLED CALLS_ENABLED; do is_bool "${!v:-}" || die "$v must be true|false"; done
-  for v in MAX_UPLOAD_BYTES RL_AUTH_PER_MIN RL_CREATEROOM_PER_HOUR RL_UPLOAD_PER_HOUR RL_GENERAL_PER_MIN \
+  for v in MAX_UPLOAD_BYTES RL_AUTH_PER_MIN RL_CREATEROOM_PER_HOUR RL_UPLOAD_PER_HOUR RL_GENERAL_PER_MIN RL_FEDERATION_PER_MIN \
            PALPO_RC_MESSAGE_BURST PALPO_MAX_CONCURRENT_REQUESTS PALPO_DB_POOL_SIZE PG_MAX_CONNECTIONS BACKUP_KEEP; do
     [[ "${!v:-}" =~ ^[1-9][0-9]*$ ]] || die "$v must be a positive integer"
   done
@@ -81,15 +83,25 @@ validate_options() {
     if [ -z "${LIVEKIT_KEY:-}" ] || [ -z "${LIVEKIT_SECRET:-}" ]; then die "CALLS_ENABLED=true needs LIVEKIT_KEY and LIVEKIT_SECRET"; fi
   fi
   [[ "${RESEND_API_KEY:-}" =~ ^[A-Za-z0-9_-]*$ ]] || die "RESEND_API_KEY has unexpected characters"
+  # Values pasted into JSON or a compose env file: plain characters only.
+  [[ "${BRAND:-}" =~ ^[A-Za-z0-9\ ._-]+$ ]] || die "BRAND may contain letters, digits, space . _ - only"
+  [[ "${LIVEKIT_SECRET:-}" =~ ^[A-Za-z0-9]*$ && "${LIVEKIT_KEY:-}" =~ ^[A-Za-z0-9]*$ ]] || die "LIVEKIT_KEY/SECRET must be alphanumeric"
+  for v in SERVER_CPUS PG_CPUS; do [[ "${!v:-1.0}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "$v must be a number"; done
+  for v in SERVER_MEM PG_MEM; do [[ "${!v:-1g}" =~ ^[0-9]+[kmg]$ ]] || die "$v like 2g"; done
+  [[ "${SERVER_RUST_LOG:-warn}" =~ ^[A-Za-z0-9_:=,.-]+$ ]] || die "SERVER_RUST_LOG has unexpected characters"
   [[ "${EMAIL_FROM:-}" != *\'* && "${EMAIL_REPLY_TO:-}" != *\'* ]] || die "EMAIL_FROM/EMAIL_REPLY_TO must not contain single quotes"
 }
 
 validate_env() { validate_names; validate_options; }
 
-# Compose reads only the exported environment (no --env-file): secrets never
-# reach compose interpolation, only the rendered files under runtime/.
+# Compose runs with an EMPTY environment plus the release's own compose.env and
+# compose-file copy: no secret reaches compose, and a rollback uses the old
+# release's compose definition, limits and profiles, not today's checkout.
 compose() {
-  docker compose --project-directory "$BUNDLE" -f "$BUNDLE/docker-compose.yml" -p "$COMPOSE_PROJECT_NAME" "$@"
+  if [ -z "${RELEASE_DIR:-}" ] || [ ! -f "$RELEASE_DIR/compose.env" ]; then die "no release selected (RELEASE_DIR)"; fi
+  env -i PATH="$PATH" HOME="$HOME" ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} docker compose \
+    --project-directory "$BUNDLE" -f "$RELEASE_DIR/docker-compose.yml" --env-file "$RELEASE_DIR/compose.env" \
+    -p "$COMPOSE_PROJECT_NAME" "$@"
 }
 
 # Replace ${NAME} with the environment value; an unset variable is an error.
@@ -145,10 +157,14 @@ livekit_service_url = \"$PUBLIC_URL/livekit/jwt\""
 }
 
 # render_runtime <dir>: write every rendered file into <dir> (a fresh snapshot
-# per deploy, so rollback can return to the exact previous config).
-render_runtime() {
+# per deploy, so rollback can return to the exact previous config). Runs in a
+# subshell so the secret exports below end with it. Needs use_release first.
+render_runtime() (
+  set -euo pipefail
   local out="$1" c="$BUNDLE/config"
-  umask 077; rm -rf "$out"; mkdir -p "$out/config" "$out/secrets"
+  [ ! -e "$out" ] || die "snapshot $out already exists"
+  export POSTGRES_PASSWORD ADMIN_PASSWORD GITHUB_CLIENT_SECRET RESEND_API_KEY LIVEKIT_SECRET GITHUB_PROVIDER_ID
+  umask 077; mkdir -p "$out/config" "$out/secrets"
   export_feature_blocks; export_calls_blocks
   render "$c/hagency.toml.example" "$out/config/hagency.toml"
   render "$c/palpo.toml.example" "$out/config/palpo.toml"
@@ -165,6 +181,21 @@ render_runtime() {
   chmod 700 "$out"; chmod 755 "$out/config" "$out/secrets"
   chmod 644 "$out/Caddyfile" "$out/element-config.json" "$out/secrets/postgres_password"
   chmod 600 "$out/config/"* "$out/secrets/admin_password" "$out/secrets/livekit.env"
+  write_compose_inputs "$out"
+)
+
+# The compose file copy, its interpolation values and profiles for this release.
+write_compose_inputs() {
+  local out="$1" v
+  cp "$BUNDLE/docker-compose.yml" "$out/docker-compose.yml"
+  {
+    printf 'SERVER_IMAGE=%s\nCADDY_IMAGE=%s\nRELEASE_DIR=%s\n' "$SERVER_IMAGE" "$CADDY_IMAGE" "$out"
+    for v in SERVER_NAME DOMAIN PG_MAX_CONNECTIONS PG_CPUS PG_MEM SERVER_CPUS SERVER_MEM SERVER_RUST_LOG LIVEKIT_URL LIVEKIT_KEY; do
+      printf '%s=%s\n' "$v" "${!v:-}"
+    done
+  } > "$out/compose.env"
+  if [ "$CALLS_ENABLED" = true ]; then echo "--profile calls" > "$out/profiles"; else : > "$out/profiles"; fi
+  chmod 600 "$out/compose.env" "$out/profiles" "$out/docker-compose.yml"
 }
 
 # --- Image references and deploy state (state/<env>/current, previous) ---
@@ -181,4 +212,4 @@ use_release() {
   export SERVER_IMAGE CADDY_IMAGE RELEASE_DIR
 }
 
-compose_profiles() { if [ "$CALLS_ENABLED" = true ]; then echo "--profile calls"; fi; }
+compose_profiles() { cat "$RELEASE_DIR/profiles"; }

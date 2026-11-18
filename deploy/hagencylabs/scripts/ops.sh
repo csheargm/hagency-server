@@ -52,9 +52,11 @@ sha_tool() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasu
 # does); the nightly cron run is per-database consistent only.
 backup_now() {
   local label="$1" final dest db
-  umask 077; mkdir -p "$BACKUPS"; chmod 700 "$BACKUPS"
-  final="$BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)-$label"; dest="$final.partial"; mkdir "$dest"
-  compose up -d postgres >&2; wait_healthy postgres 120 >&2 || die "postgres not healthy; no backup"
+  umask 077; mkdir -p "$BACKUPS" || die "cannot create $BACKUPS"; chmod 700 "$BACKUPS" || die "cannot chmod $BACKUPS"
+  final="$BACKUPS/$(date -u +%Y%m%dT%H%M%SZ)-$label"; dest="$final.partial"
+  mkdir "$dest" || die "cannot create $dest"
+  compose up -d postgres >&2 || die "cannot start postgres; no backup"
+  wait_healthy postgres 120 >&2 || die "postgres not healthy; no backup"
   for db in hagency palpo pasion; do
     compose exec -T postgres pg_dump -U hagency -Fc "$db" > "$dest/$db.dump" || die "pg_dump $db failed"
     [ -s "$dest/$db.dump" ] || die "empty dump for $db"
@@ -89,21 +91,34 @@ rotate_backups() {
 }
 
 # restore_backup <dir>: replace all three databases and the server-data volume.
-# Destroys data written after the backup. Callers stop the server first.
+# Destroys data written after the backup. Every step dies on failure (die exits
+# the script even inside a caller's conditional). Databases are loaded into
+# <db>_restore first; the live ones are only replaced once all three loaded.
 restore_backup() {
   local src="$1" db
   [ -f "$src/SHA256SUMS" ] || die "$src is not a backup directory"
   ( cd "$src" && sha_tool -c SHA256SUMS >/dev/null ) || die "checksum mismatch in $src"
   grep -qx "env=$ENV_NAME" "$src/meta.txt" || die "$src is not a $ENV_NAME backup (never restore across environments)"
-  compose stop server caddy >/dev/null 2>&1 || true
-  compose up -d postgres; wait_healthy postgres 120 || die "postgres not healthy"
+  gzip -t "$src/server-data.tgz" || die "server-data archive in $src is corrupt"
+  compose stop server caddy >/dev/null 2>&1 || die "cannot stop server and caddy"
+  compose up -d postgres || die "cannot start postgres"
+  wait_healthy postgres 120 || die "postgres not healthy"
   for db in hagency palpo pasion; do
-    log "restoring database $db"
-    compose exec -T postgres psql -v ON_ERROR_STOP=1 -q -U hagency -d postgres \
-      -c "DROP DATABASE IF EXISTS $db WITH (FORCE);" -c "CREATE DATABASE $db OWNER hagency;"
-    compose exec -T postgres pg_restore -U hagency -d "$db" --no-owner --exit-on-error < "$src/$db.dump"
+    log "loading $db into ${db}_restore"
+    pg_admin "DROP DATABASE IF EXISTS ${db}_restore WITH (FORCE);" "CREATE DATABASE ${db}_restore OWNER hagency;"
+    compose exec -T postgres pg_restore -U hagency -d "${db}_restore" --no-owner --exit-on-error < "$src/$db.dump" \
+      || die "pg_restore $db failed; live databases untouched"
+  done
+  for db in hagency palpo pasion; do
+    pg_admin "DROP DATABASE IF EXISTS $db WITH (FORCE);" "ALTER DATABASE ${db}_restore RENAME TO $db;"
   done
   log "restoring server-data volume"
   compose run --rm --no-deps -T --entrypoint sh server -c 'find /app/data -mindepth 1 -delete && tar -C /app/data -xzf -' \
-    < "$src/server-data.tgz"
+    < "$src/server-data.tgz" || die "server-data restore failed: databases are restored, volume is NOT; rerun the restore"
+}
+
+pg_admin() {
+  local args=() q
+  for q in "$@"; do args+=(-c "$q"); done
+  compose exec -T postgres psql -v ON_ERROR_STOP=1 -q -U hagency -d postgres "${args[@]}" || die "psql failed: $*"
 }
