@@ -21,17 +21,18 @@ conversations can be seen").
   unknown value, means `room`. The event type is pinned by a test here and in
   the desktop (`hagency_core::agent_replies`).
 * `agent_replies::is_flat`: the answer is a main-timeline reply when the room
-  is in `room` mode, the request is a top-level group request (root == the
-  request's event id) and the room is not an owner DM. A request written in a
+  is in `room` mode, the request is a top-level project-room request (root ==
+  the request's event id) and the scope is not personal (owner DM): personal
+  intents keep their stored shape, legacy event-rooted DM intents included. A request written in a
   thread is answered in that thread in both modes; owner DMs are unchanged.
 * A flat answer is `{"m.relates_to":{"m.in_reply_to":{"event_id":<request>}}}`
   with the Markdown rendering of the answer, and a plain `body` that starts
   with `> <@requester> first line of the request` (80 characters at most):
   the reply fallback for clients that do not render the relation. The quote
   is added after the HTML is rendered, so `formatted_body` has none.
-* The mode is read from the room's current state through the same `Gateway`
-  read the delivery check uses, once per send. A failed read answers in the
-  room (logged), never holds the answer back.
+* The mode is read from the same room-state snapshot as the delivery facts
+  the send is authorized on (`DeliveryFacts::reply_mode`); there is no second
+  read between the claim and the send.
 * Request notices follow the same rule. The progress status was already a
   top-level notice replying to the request; it is unchanged.
 * `ReplyIntent` gains `request_event_id` and `request_body` (sub-selects of
@@ -41,6 +42,10 @@ conversations can be seen").
   when it addresses the Agent, under the existing rules.
 
 ## Consequences
+
+* The quote copies the request's first line into the answer; if the request
+  is later redacted, that line stays in the answer (GPT review). Accepted for
+  plain-text clients; clients that render the relation do not need it.
 
 * Rooms that never set the event switch to main-timeline answers as soon as
   this build runs; a room that wants the old shape sets `{"mode":"thread"}`
