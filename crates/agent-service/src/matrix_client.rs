@@ -173,8 +173,8 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
-    pub async fn provision(&self, agent: &Agent, room: &str, invite: bool) -> Result<()> {
-        self.provision_identity(agent).await?;
+    pub async fn provision(&self, agent: &Agent, owner: &str, room: &str, invite: bool) -> Result<()> {
+        self.provision_identity(agent, owner).await?;
         if invite {
             self.call(
                 Method::POST,
@@ -193,33 +193,12 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
-    pub async fn provision_identity(&self, agent: &Agent) -> Result<()> {
-        let who = self
-            .call(
-                Method::GET,
-                &["_matrix", "client", "v3", "account", "whoami"],
-                &agent.puppet_mxid,
-                None,
-            )
-            .await?;
-        if who["user_id"] != agent.puppet_mxid {
-            return Err(Error::Conflict("matrix_identity_mismatch"));
-        }
-        self.call(
-            Method::PUT,
-            &[
-                "_matrix",
-                "client",
-                "v3",
-                "profile",
-                &agent.puppet_mxid,
-                "displayname",
-            ],
-            &agent.puppet_mxid,
-            Some(json!({"displayname":agent.display_name})),
-        )
-        .await?;
-        Ok(())
+    /// Verifies the puppet, names it and publishes `owner` (the creating
+    /// person's Matrix ID) before any desktop opens the Agent.
+    pub async fn provision_identity(&self, agent: &Agent, owner: &str) -> Result<()> {
+        self.managed_verify_identity(agent).await?;
+        self.managed_set_display_name(agent).await?;
+        self.set_agent_fields(&agent.puppet_mxid, owner, None).await
     }
     pub(crate) async fn managed_verify_identity(&self,agent:&Agent)->Result<()> {
         let who=self.call(Method::GET,&["_matrix","client","v3","account","whoami"],&agent.puppet_mxid,None).await?;
@@ -297,4 +276,5 @@ impl MatrixClient {
     }
 }
 #[path = "matrix_client_owner_direct.rs"] mod owner_direct;
+#[path = "matrix_client_profile_fields.rs"] pub mod profile_fields;
 #[cfg(test)] #[path = "matrix_client_tests.rs"] mod puppet_tests;

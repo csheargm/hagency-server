@@ -19,6 +19,9 @@ use std::{collections::BTreeSet, sync::Arc};
 mod agent_mxid;
 #[path = "domain_agent_rename.rs"]
 mod agent_rename;
+#[path = "domain_agent_owner_field.rs"]
+mod agent_owner_field;
+pub use agent_owner_field::OwnerField;
 pub(crate) use agent_rename::PROFILE_WRITES;
 #[path = "domain_discovery.rs"]
 mod discovery;

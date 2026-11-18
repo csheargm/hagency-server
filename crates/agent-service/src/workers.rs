@@ -659,6 +659,7 @@ pub(crate) fn start_cleanup(
         let mut cursor = String::new();
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
+        let mut owner_fields = crate::worker_owner_fields::OwnerFieldSweep::default();
         let mut managed_matrix_cursor = String::new();
         let mut shared_room_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -676,6 +677,7 @@ pub(crate) fn start_cleanup(
             }
             let _ = domain.revoke_shared_crypto_devices(&m).await;
             let _ = domain.sweep_managed_runtime().await;
+            owner_fields.run(&domain, &m).await;
             if let Ok(ids) = domain
                 .managed_matrix_candidates(&managed_matrix_cursor, 20)
                 .await
@@ -696,7 +698,8 @@ pub(crate) fn start_cleanup(
             {
                 for agent in agents {
                     identity_cursor = agent.id.clone();
-                    if m.provision_identity(&agent).await.is_ok() {
+                    let Ok(owner) = domain.agent_owner_mxid(&agent).await else { continue };
+                    if m.provision_identity(&agent, &owner).await.is_ok() {
                         let _ = domain
                             .confirm_identity_provisioned(&agent.id, agent.generation)
                             .await;
@@ -808,7 +811,7 @@ pub(crate) fn start_cleanup(
                         let Ok(agent) = domain.with_stored_name(agent).await else {
                             continue;
                         };
-                        if m.provision(&agent, room, !invited).await.is_err() {
+                        if m.provision(&agent, &scope.owner_mxid, room, !invited).await.is_err() {
                             continue;
                         }
                     }

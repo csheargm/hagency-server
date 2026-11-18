@@ -52,6 +52,7 @@ mod workers;
 mod automated_requests;
 mod agent_replies;
 mod worker_pass;
+mod worker_owner_fields;
 mod reply_format;
 
 pub type Result<T> = std::result::Result<T, Error>;
