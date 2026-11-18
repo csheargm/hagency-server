@@ -240,6 +240,14 @@ pub struct ReplyIntent {
     pub worker_until_ms: i64,
     #[diesel(sql_type=Nullable<Text>)]
     pub matrix_event_id: Option<String>,
+    /// The request this reply answers and its text: where a flat reply points
+    /// and what its plain-text quote says (ADR 0004). Never sent to clients.
+    #[diesel(sql_type=Text)]
+    #[serde(skip_serializing)]
+    pub request_event_id: String,
+    #[diesel(sql_type=Text)]
+    #[serde(skip_serializing)]
+    pub request_body: String,
 }
 /// Trusted homeserver observation of a prior send, not a client claim. The
 /// exact original Matrix transaction ID must be proven; matching text alone is
@@ -1111,13 +1119,13 @@ impl TransportStore {
         }).await
     }
     async fn reply(db: &mut AsyncPgConnection, id: &str) -> Result<ReplyIntent> {
-        sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox WHERE id=$1").bind::<Text,_>(id).get_result(db).await.map_err(unauthorized)
+        sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid,(SELECT event_id FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_event_id,(SELECT body FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_body FROM hagency_agent_v1.reply_outbox WHERE id=$1").bind::<Text,_>(id).get_result(db).await.map_err(unauthorized)
     }
     async fn reply_for_event(
         db: &mut AsyncPgConnection,
         event: &str,
     ) -> Result<Option<ReplyIntent>> {
-        Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox WHERE owner_event_id=$1").bind::<Text,_>(event).get_result(db).await.optional()?)
+        Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid,(SELECT event_id FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_event_id,(SELECT body FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_body FROM hagency_agent_v1.reply_outbox WHERE owner_event_id=$1").bind::<Text,_>(event).get_result(db).await.optional()?)
     }
     /// Trusted gateway only. A proven denial permanently removes this dispatch
     /// from the delivery front; it does not revive executions or release quotas.
@@ -1189,7 +1197,7 @@ impl TransportStore {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
         let mut db = self.db.lock().await?;
-        Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox o WHERE state IN ('pending','unknown','sending') AND NOT delivery_blocked AND EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE b.id=o.binding_id AND b.generation=o.binding_generation AND b.state='active' AND a.state='active' AND u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id)) AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND l.epoch=o.delivery_epoch AND a.execution_device_id=l.device_id AND l.device_generation=d.generation AND NOT d.revoked AND NOT s.revoked AND d.user_id=o.owner_user_id AND s.user_id=o.owner_user_id AND l.expires_at_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND s.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint)) AND worker_until_ms<=greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) ORDER BY (id<=$3),id LIMIT $2")
+        Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid,(SELECT event_id FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_event_id,(SELECT body FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS request_body FROM hagency_agent_v1.reply_outbox o WHERE state IN ('pending','unknown','sending') AND NOT delivery_blocked AND EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE b.id=o.binding_id AND b.generation=o.binding_generation AND b.state='active' AND a.state='active' AND u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id)) AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND l.epoch=o.delivery_epoch AND a.execution_device_id=l.device_id AND l.device_generation=d.generation AND NOT d.revoked AND NOT s.revoked AND d.user_id=o.owner_user_id AND s.user_id=o.owner_user_id AND l.expires_at_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND s.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint)) AND worker_until_ms<=greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) ORDER BY (id<=$3),id LIMIT $2")
             .bind::<BigInt,_>(now).bind::<BigInt,_>(limit as i64).bind::<Text,_>(cursor).load(&mut *db).await?)
     }
     /// Trusted routing worker scan over the existing durable AS inbox. No body
