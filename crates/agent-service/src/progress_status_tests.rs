@@ -150,6 +150,9 @@ async fn postgres_a_slow_person_request_is_marked_once_in_place() {
     let first = t.progress_candidates("", now).await.unwrap().into_iter().find(|s| s.thread_root == "$progress-slow").unwrap();
     let first = t.claim_progress(&first.id, &f.facts, now).await.unwrap();
     t.confirm_progress(&first.id, first.worker_token.as_deref().unwrap(), first.revision, &Ok("$slow-status".into()), now).await.unwrap();
+    age(&id, now - 100_000).await;
+    let soon = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS + 100;
+    assert!(t.progress_candidates("", soon).await.unwrap().iter().all(|s| s.id != first.id), "not slow before 120 s");
     age(&id, now - 130_000).await;
     let later = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS + 100;
     let due = t.progress_candidates("", later).await.unwrap();
@@ -164,6 +167,33 @@ async fn postgres_a_slow_person_request_is_marked_once_in_place() {
     let much_later = crate::api::now_ms() + 10 * MIN_EDIT_INTERVAL_MS;
     assert!(t.progress_candidates("", much_later).await.unwrap().iter().all(|s| s.id != first.id), "one cue only");
     assert!(t.request_notice_candidates("", much_later).await.unwrap().iter().all(|n| n.owner_event_id != id));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_denied_slow_edit_still_leaves_the_failure_notice_owed() {
+    use super::super::tests::{enqueue, fixture, running};
+    let f = fixture().await;
+    let t = &f.transport;
+    let now = crate::api::now_ms();
+    let lease = t.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
+    let lease = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
+    let id = enqueue(&f, "progress-slow-denied").await;
+    running(&f, &lease, &id, "slow-denied-run").await;
+    assert!(t.record_progress(&f.p, &lease, &id, "slow-denied-run", &[], 0, &f.facts, now).await.unwrap());
+    let first = t.progress_candidates("", now).await.unwrap().into_iter().find(|s| s.thread_root == "$progress-slow-denied").unwrap();
+    let first = t.claim_progress(&first.id, &f.facts, now).await.unwrap();
+    t.confirm_progress(&first.id, first.worker_token.as_deref().unwrap(), first.revision, &Ok("$denied-status".into()), now).await.unwrap();
+    age(&id, now - 130_000).await;
+    let later = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS + 100;
+    assert!(t.progress_candidates("", later).await.unwrap().iter().any(|s| s.id == first.id));
+    let edit = t.claim_progress(&first.id, &f.facts, later).await.unwrap();
+    let denied = Err(Error::Conflict("matrix_permission_missing"));
+    t.confirm_progress(&edit.id, edit.worker_token.as_deref().unwrap(), edit.revision, &denied, later).await.unwrap();
+    t.finish_without_reply(&f.p, &lease, &id, "slow-denied-run", "failed", later).await.unwrap();
+    let notices = t.request_notice_candidates("", later).await.unwrap();
+    assert_eq!(notices.iter().filter(|n| n.owner_event_id == id).map(|n| n.kind.as_str()).collect::<Vec<_>>(), vec!["failed"],
+        "a stopped status line never carries the outcome, so the notice does");
 }
 
 #[tokio::test]

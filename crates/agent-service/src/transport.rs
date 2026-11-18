@@ -104,7 +104,7 @@ pub struct RoutedEvent {
     pub encrypted: bool,
     pub is_edit: bool,
     /// Posted by a Hagency automation (`automated_requests`): it gets no
-    /// interim status. Omitted when false so older digests stay the same.
+    /// interim status. Never part of the event digest.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub automated: bool,
 }
@@ -710,8 +710,9 @@ impl TransportStore {
         if event.is_edit {
             return Ok(RouteResult::Ignored);
         }
-        let digest =
-            hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?);
+        // Display class, not payload: a hand-off replayed across the upgrade stays a duplicate.
+        let canonical = RoutedEvent { automated: false, ..event.clone() };
+        let digest = hash(&serde_json::to_string(&canonical).map_err(|_| Error::Invalid("invalid_event"))?);
         let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {

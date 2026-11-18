@@ -13,7 +13,7 @@ pub(crate) const AUTOMATION_MARKERS: [&str; 3] =
 
 /// Whether this plaintext message content was posted by an automation.
 pub(crate) fn is_automated(content: &Value) -> bool {
-    AUTOMATION_MARKERS.iter().any(|marker| content.get(marker).is_some())
+    AUTOMATION_MARKERS.iter().any(|marker| content.get(marker).is_some_and(Value::is_object))
 }
 
 #[cfg(test)]
@@ -29,6 +29,7 @@ mod tests {
         assert!(is_automated(&json!({"body":"x","io.hagency.issue_track":{}})));
         let typed = json!({"msgtype":"m.text","body":"@agent fix #12","io.hagency.activity":{}});
         assert!(!is_automated(&typed), "a person's message with other Hagency fields still gets status");
+        assert!(!is_automated(&json!({"body":"x","io.hagency.issue_handoff":null})), "the watcher's marker is an object");
     }
 
     #[test]
@@ -38,8 +39,6 @@ mod tests {
         assert!(handoff.automated);
         let typed = crate::workers::parse_event(&raw(json!({"msgtype":"m.text","body":"fix #3"}))).unwrap();
         assert!(!typed.automated);
-        // The duplicate check hashes the serialized event: a typed request's
-        // form is unchanged, so a replay across the upgrade is still a duplicate.
         assert!(serde_json::to_value(&typed).unwrap().get("automated").is_none());
     }
 }

@@ -18,5 +18,12 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.progress_status (
 CREATE INDEX IF NOT EXISTS progress_status_pending_idx ON hagency_agent_v1.progress_status(state,id);
 -- A request a Hagency automation posted (the issue watcher's hand-off) gets no
 -- live status at all; `slow` marks the one in-place "Still working" cue.
-ALTER TABLE hagency_agent_v1.owner_events ADD COLUMN IF NOT EXISTS automated boolean NOT NULL DEFAULT false;
-ALTER TABLE hagency_agent_v1.progress_status ADD COLUMN IF NOT EXISTS slow boolean NOT NULL DEFAULT false;
+-- Guarded so a restart does not take the tables' exclusive lock again.
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='owner_events' AND column_name='automated') THEN
+  ALTER TABLE hagency_agent_v1.owner_events ADD COLUMN automated boolean NOT NULL DEFAULT false;
+ END IF;
+ IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='progress_status' AND column_name='slow') THEN
+  ALTER TABLE hagency_agent_v1.progress_status ADD COLUMN slow boolean NOT NULL DEFAULT false;
+ END IF;
+END $$;

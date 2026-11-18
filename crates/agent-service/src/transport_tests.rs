@@ -2769,6 +2769,22 @@ async fn lose_run(f: &Fixture, id: &str) {
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_hand_off_routed_before_the_upgrade_replays_as_a_duplicate() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    // The old binary stored the hand-off without the mark.
+    let RouteResult::Queued { dispatch_id } = f.transport.ingest_routed(&f.binding, event(&f, "upgrade-handoff", true, None), &f.facts, now).await.unwrap() else {
+        panic!("queued");
+    };
+    let replay = RoutedEvent { automated: true, ..event(&f, "upgrade-handoff", true, None) };
+    match f.transport.ingest_routed(&f.binding, replay, &f.facts, now).await.unwrap() {
+        RouteResult::Duplicate { dispatch_id: same } => assert_eq!(same, dispatch_id),
+        other => panic!("expected a duplicate, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_a_run_the_device_reported_lost_gets_no_second_message() {
     let f = fixture().await;
     let now = crate::api::now_ms();

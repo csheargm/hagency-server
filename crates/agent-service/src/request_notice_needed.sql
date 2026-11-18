@@ -1,9 +1,9 @@
 CREATE OR REPLACE VIEW hagency_agent_v1.request_notice_needed AS
  SELECT e.id AS owner_event_id, e.binding_id, e.requester_mxid, e.thread_root, e.binding_generation,
  CASE
-  WHEN e.state='unknown' AND r.id IS NULL AND ps.status_event_id IS NULL AND e.outcome IS NULL AND NOT e.automated THEN 'interrupted'
+  WHEN e.state='unknown' AND r.id IS NULL AND (ps.status_event_id IS NULL OR ps.state='cancelled') AND e.outcome IS NULL AND NOT e.automated THEN 'interrupted'
   WHEN e.state='cancelled' AND e.outcome='unknown' AND e.execution_id IS NULL THEN 'failed'
-  WHEN e.state IN ('completed','cancelled') AND e.outcome IN ('failed','rejected') AND ps.status_event_id IS NULL THEN e.outcome
+  WHEN e.state IN ('completed','cancelled') AND e.outcome IN ('failed','rejected') AND (ps.status_event_id IS NULL OR ps.state='cancelled') THEN e.outcome
   WHEN e.state='cancelled' AND e.outcome='expired' THEN 'expired'
  END AS kind
  FROM hagency_agent_v1.owner_events e
@@ -11,7 +11,8 @@ CREATE OR REPLACE VIEW hagency_agent_v1.request_notice_needed AS
  -- Only outcomes are posted. Interim "queued", "still working" and "reply
  -- delayed" notices flooded busy rooms (owner, 2026-11-18); a slow turn now
  -- shows once, in place, on its live status (progress_status `slow`). A posted
- -- status's final edit carries the failure text, so it is not sent twice.
+ -- status's final edit carries the failure text, so it is not sent twice;
+ -- a status Matrix stopped (cancelled) will never carry it, so the notice is owed.
  -- "Interrupted" is owed only when the server itself lost the run (outcome
  -- NULL: the execution device changed). A device that reports `unknown` has
  -- already edited its own run line to "went offline", and an automation's
