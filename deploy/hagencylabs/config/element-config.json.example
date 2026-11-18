@@ -1,0 +1,14 @@
+{
+  "default_server_config": {
+    "m.homeserver": { "base_url": "${PUBLIC_URL}", "server_name": "${SERVER_NAME}" }
+  },
+  "disable_custom_urls": true,
+  "disable_guests": true,
+  "disable_3pid_login": true,
+  "brand": "${BRAND}",
+  "default_theme": "light",
+  "room_directory": { "servers": ["${SERVER_NAME}"] },
+  "element_call": { "url": "https://call.element.io" },
+  "show_labs_settings": false,
+  "setting_defaults": { "UIFeature.registration": true, "UIFeature.passwordReset": ${PASSWORD_RECOVERY_ENABLED} }
+}

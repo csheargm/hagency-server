@@ -1,0 +1,35 @@
+# Embedded Pasion (accounts / OAuth, mounted at /auth/). Rendered by deploy.sh.
+# Secrets: POSTGRES_PASSWORD here; GitHub client secret and Resend API key in
+# the blocks below (github-provider.toml.example, email-resend.toml.example).
+# Pasion's own signing/encryption keys are generated on first start into the
+# server-data volume (pasion-secrets.json), not configured here.
+[database]
+uri = "postgres://hagency:${POSTGRES_PASSWORD}@postgres:5432/pasion"
+[hagency]
+resources_dir = "/app/resources/pasion"
+delegate_matrix_auth = true
+[account]
+password_registration_enabled = ${PASSWORD_REGISTRATION_ENABLED}
+password_registration_contact_required = false
+registration_token_required = ${REGISTRATION_TOKEN_REQUIRED}
+password_recovery_enabled = ${PASSWORD_RECOVERY_ENABLED}
+# Hagency desktop native sign-in (ADR option D). The desktop reads this ID from
+# /native/config, so it only has to be stable per server.
+native_client_id = "${NATIVE_DESKTOP_CLIENT_ID}"
+# Pasion's default password strength (zxcvbn 3) stays on.
+# Rate limits: hagency-server hard-codes Pasion's http.trusted_proxies = [], so
+# behind Caddy every request comes from Caddy's address and Pasion's per-IP
+# limits become ONE global bucket (defaults: 3 logins/min, 3 sign-ups/hour for
+# everybody). Until the server exposes trusted_proxies, real per-IP caps live in
+# Caddy (RL_AUTH_PER_MIN) and these are global ceilings. See RUNBOOK "Known gaps".
+[rate_limiting]
+registration = { burst = 30, per_second = 0.2 }
+[rate_limiting.login]
+per_ip = { burst = 120, per_second = 2 }
+[[clients]]
+client_id = "${NATIVE_DESKTOP_CLIENT_ID}"
+client_auth_method = "none"
+client_name = "Hagency Desktop"
+redirect_uris = ["http://127.0.0.1/"]
+${EMAIL_BLOCK}
+${GITHUB_PROVIDER_BLOCK}

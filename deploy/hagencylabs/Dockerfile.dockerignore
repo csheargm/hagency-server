@@ -1,0 +1,13 @@
+# Build context is the hagency-server repository root. Allow-list only what the
+# Dockerfile copies; .run/ (Mac-only Palpo/Pasion links), data/, secrets/ and
+# config/dev/ never enter the build.
+*
+!rust-toolchain.toml
+!Cargo.toml
+!Cargo.lock
+!crates
+!xtask
+!scripts/docker-entrypoint.sh
+**/target
+**/node_modules
+**/.DS_Store

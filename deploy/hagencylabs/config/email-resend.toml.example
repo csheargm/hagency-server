@@ -1,0 +1,8 @@
+# Outbound email through Resend (included in pasion.toml when RESEND_API_KEY is
+# set). Secret: RESEND_API_KEY. EMAIL_FROM must be on a domain verified in Resend.
+[email]
+from = '${EMAIL_FROM}'
+reply_to = '${EMAIL_REPLY_TO}'
+[email.provider]
+type = "resend"
+api_key = "${RESEND_API_KEY}"

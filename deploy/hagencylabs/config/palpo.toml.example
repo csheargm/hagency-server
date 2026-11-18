@@ -1,0 +1,32 @@
+# Embedded Palpo homeserver config. Rendered by deploy.sh. Secrets: POSTGRES_PASSWORD.
+# server_name is PERMANENT: it is in every user ID and room ID. Staging and
+# production must never share it (or the signing key in the server-data volume).
+server_name = "${SERVER_NAME}"
+allow_registration = false
+# Fetch peers' signing keys from the peers themselves, not from matrix.org.
+trusted_servers = []
+max_upload_size = ${MAX_UPLOAD_BYTES}
+max_concurrent_requests = ${PALPO_MAX_CONCURRENT_REQUESTS}
+rc_login = { per_second = 0.05, burst = 10 }
+rc_registration = { per_second = 0.17, burst = 3 }
+rc_message = { per_second = ${PALPO_RC_MESSAGE_PER_SECOND}, burst = ${PALPO_RC_MESSAGE_BURST} }
+# Public hosts: real certificates only, and the default private-range denylist
+# stays on (the Mac demo turns both off for loopback federation).
+allow_invalid_tls_certificates = false
+[db]
+url = "postgres://hagency:${POSTGRES_PASSWORD}@postgres:5432/palpo"
+pool_size = ${PALPO_DB_POOL_SIZE}
+[well_known]
+client = "${PUBLIC_URL}"
+server = "${DOMAIN}:443"
+${RTC_FOCI_BLOCK}
+# MSC4140 delayed events stay off: this Palpo ignores the spec's delay query on
+# PUT /state, so Element Call's "leave" would apply at once (see deploy/calls).
+[delayed_events]
+enable = false
+[storage]
+backend = "fs"
+root = "/app/data/media"
+[federation]
+enable = true
+${FEDERATION_ALLOWED_LINE}

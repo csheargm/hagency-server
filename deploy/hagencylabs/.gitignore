@@ -1,0 +1,7 @@
+# Host-local state: never commit.
+env/*.env
+secrets/
+runtime/
+state/
+backups/
+dist/
