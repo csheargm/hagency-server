@@ -149,7 +149,7 @@ pub(super) async fn fixture() -> Fixture {
         .unwrap();
     let p = auth.authenticate(&first.token, now, true).await.unwrap();
     let second = auth.authenticate(&second.token, now, true).await.unwrap();
-    let facts = DeliveryFacts {
+    let facts = DeliveryFacts { reply_mode: Default::default(),
                 requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: user.mxid,
@@ -1539,7 +1539,7 @@ async fn postgres_selected_binding_is_filtered_before_limit_and_cannot_cross_own
     for i in 0..3 {
         enqueue(&f, &format!("older-other-{i}")).await;
     }
-    let second_facts = DeliveryFacts {
+    let second_facts = DeliveryFacts { reply_mode: Default::default(),
         owner_direct_valid: false,
         room_id: room.clone(),
         ..f.facts.clone()
@@ -2423,7 +2423,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
     let f = fixture().await;
     let now = crate::api::now_ms();
     let room = format!("!pause_direct_{}:example.test", secret_token());
-    let direct = DeliveryFacts {
+    let direct = DeliveryFacts { reply_mode: Default::default(),
         requires_mention: false,
         requester_mxid: f.p.mxid.clone(),
         room_id: room.clone(),

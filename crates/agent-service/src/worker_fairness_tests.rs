@@ -267,7 +267,7 @@ async fn exercise(url: &str) {
         agent_id: created.agent.id.clone(),
         epoch: lease.epoch,
     };
-    let delivery = |room: &str| DeliveryFacts {
+    let delivery = |room: &str| DeliveryFacts { reply_mode: Default::default(),
                 requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: p.mxid.clone(),

@@ -7,10 +7,13 @@
 //! under the request. A request a person wrote inside a thread is answered in
 //! that thread either way, and a top-level owner DM stays flat.
 //!
+//! The mode is read from the same room-state snapshot as the delivery facts
+//! the send is authorized on (`DeliveryFacts::reply_mode`), never a second read.
+//!
 //! Hagency Desktop's `hagency_core::agent_replies` carries the same contract
 //! for the replies its Agent device posts; the strings below are pinned by
 //! tests on both sides.
-use crate::{gateway::Gateway, transport::ReplyIntent};
+use crate::transport::ReplyIntent;
 use serde_json::{Value, json};
 
 /// The room state event that holds the choice.
@@ -41,32 +44,20 @@ impl Mode {
     }
 }
 
-/// The room's choice, read fresh with the delivery facts' own state source.
-pub async fn room_mode(gateway: &Gateway, room: &str) -> Mode {
-    match gateway.state(room).await {
-        Ok(state) => Mode::of(&state),
-        Err(error) => {
-            // The delivery check read this state moments ago; a failed second
-            // read must not hold the answer back. The default (main timeline)
-            // is what a room that never chose gets, and the reason is logged.
-            tracing::warn!(code = %error, "Agent reply mode unavailable; replying in the room");
-            Mode::default()
-        }
-    }
-}
-
 /// True when the answer to `event` (stored under `root`) is a main-timeline
-/// reply: a top-level group request in a room that did not choose threads.
-pub fn is_flat(mode: Mode, owner_direct: bool, room: &str, event: &str, root: &str) -> bool {
-    mode == Mode::Room && !(owner_direct && root == room) && root.starts_with('$') && root == event
+/// reply: a top-level request in a project room that did not choose threads.
+/// Personal-scope rooms (`owner_direct`) keep their stored shape, including
+/// legacy intents whose root is the request itself (`workers::reply_content`).
+pub fn is_flat(mode: Mode, owner_direct: bool, event: &str, root: &str) -> bool {
+    mode == Mode::Room && !owner_direct && root.starts_with('$') && root == event
 }
 
 /// The answer's content, placed by the room's choice: a top-level group
 /// request gets a main-timeline reply quoting it unless the room keeps Agent
 /// replies in threads.
-pub async fn answer_content(gateway: &Gateway, owner_direct: bool, intent: &ReplyIntent) -> Value {
-    let mode = room_mode(gateway, &intent.room_id).await;
-    if is_flat(mode, owner_direct, &intent.room_id, &intent.request_event_id, &intent.thread_root) {
+/// `mode` comes from the delivery snapshot the send was authorized on.
+pub fn answer_content(mode: Mode, owner_direct: bool, intent: &ReplyIntent) -> Value {
+    if is_flat(mode, owner_direct, &intent.request_event_id, &intent.thread_root) {
         return flat_reply_content(&intent.request_event_id, &intent.requester_mxid, &intent.request_body, &intent.body);
     }
     crate::workers::reply_content(owner_direct, &intent.room_id, &intent.thread_root, &intent.body)
@@ -119,19 +110,13 @@ mod tests {
 
     #[test]
     fn only_a_top_level_group_request_in_room_mode_is_flat() {
-        assert!(is_flat(Mode::Room, false, "!r:x", "$q", "$q"));
-        assert!(!is_flat(Mode::Thread, false, "!r:x", "$q", "$q"), "the threads setting");
-        assert!(!is_flat(Mode::Room, false, "!r:x", "$followup", "$root"), "a person's thread");
-        assert!(!is_flat(Mode::Room, true, "!dm:x", "$q", "!dm:x"), "an owner DM");
+        assert!(is_flat(Mode::Room, false, "$q", "$q"));
+        assert!(!is_flat(Mode::Thread, false, "$q", "$q"), "the threads setting");
+        assert!(!is_flat(Mode::Room, false, "$followup", "$root"), "a person's thread");
+        assert!(!is_flat(Mode::Room, true, "$q", "!dm:x"), "an owner DM");
+        assert!(!is_flat(Mode::Room, true, "$q", "$q"), "a legacy owner-DM intent rooted at its request");
     }
 
-    fn gateway(state: Option<Vec<Value>>) -> Gateway {
-        let read: crate::gateway::ReadState = std::sync::Arc::new(move |_room| {
-            let state = state.clone();
-            Box::pin(async move { state.ok_or(crate::Error::Unavailable("matrix_state_unavailable")) })
-        });
-        Gateway::new(read, "@_hagency_service:x".into())
-    }
     fn intent(root: &str) -> ReplyIntent {
         ReplyIntent {
             id: "rpl_1".into(), owner_event_id: "evt_1".into(), requester_mxid: "@anna:x".into(),
@@ -146,19 +131,28 @@ mod tests {
 
     /// The user flow: Anna asks in the dev room; Betty, another member, reads
     /// the answer in the main timeline under the quoted question. The room's
-    /// "threads" setting brings the thread back; a failed state read still answers.
-    #[tokio::test]
-    async fn an_answer_is_a_main_timeline_reply_unless_the_room_chose_threads() {
-        let flat = answer_content(&gateway(Some(state(None))), false, &intent("$q")).await;
+    /// "threads" setting brings the thread back.
+    #[test]
+    fn an_answer_is_a_main_timeline_reply_unless_the_room_chose_threads() {
+        let flat = answer_content(Mode::of(&state(None)), false, &intent("$q"));
         assert_eq!(flat["m.relates_to"], json!({"m.in_reply_to":{"event_id":"$q"}}));
         assert!(flat["body"].as_str().unwrap().starts_with("> <@anna:x> @anna-claude what are the issues?\n\n"));
-        let threaded = answer_content(&gateway(Some(state(Some("thread")))), false, &intent("$q")).await;
+        let threaded = answer_content(Mode::of(&state(Some("thread"))), false, &intent("$q"));
         assert_eq!(threaded["m.relates_to"]["rel_type"], "m.thread");
         assert_eq!(threaded["body"], "Three issues.");
-        let inside = answer_content(&gateway(Some(state(None))), false, &intent("$root")).await;
+        let inside = answer_content(Mode::Room, false, &intent("$root"));
         assert_eq!(inside["m.relates_to"]["event_id"], "$root", "a person's thread keeps its answer");
-        let unreadable = answer_content(&gateway(None), false, &intent("$q")).await;
-        assert!(unreadable["m.relates_to"]["rel_type"].is_null());
+    }
+
+    /// GPT review: personal-scope intents keep the shape they were stored with.
+    #[test]
+    fn owner_direct_intents_keep_their_stored_shape() {
+        let mut legacy = intent("$q");
+        legacy.room_id = "!dm:x".into();
+        assert_eq!(answer_content(Mode::Room, true, &legacy), crate::workers::reply_content(true, "!dm:x", "$q", "Three issues."));
+        let mut top = intent("!dm:x");
+        top.room_id = "!dm:x".into();
+        assert!(answer_content(Mode::Room, true, &top).get("m.relates_to").is_none());
     }
 
     #[test]

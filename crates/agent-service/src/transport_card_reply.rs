@@ -81,7 +81,7 @@ mod tests {
         CardReply { dispatch_id: "dsp_1".into(), execution_id: "exe_1".into(), body: "42".into(), matrix_event_id: "$card".into() }
     }
     fn facts(encrypted: bool) -> DeliveryFacts {
-        DeliveryFacts { owner_mxid: "@o:x".into(), requester_mxid: "@o:x".into(), puppet_mxid: "@a:x".into(),
+        DeliveryFacts { reply_mode: Default::default(), owner_mxid: "@o:x".into(), requester_mxid: "@o:x".into(), puppet_mxid: "@a:x".into(),
             room_id: "!r:x".into(), space_id: String::new(), observed_at_ms: 0, owner_in_space: true,
             owner_in_room: true, room_in_space: true, requester_in_room: true, puppet_in_room: true,
             puppet_can_send_message: true, encrypted, owner_direct_valid: true, requires_mention: false }

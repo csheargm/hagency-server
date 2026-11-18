@@ -725,7 +725,7 @@ mod clock_tests {
             manager_mxid: "@manager:example.test".into(),
             pool_agent: false,
         };
-        let mut f = DeliveryFacts {
+        let mut f = DeliveryFacts { reply_mode: Default::default(),
                 requires_mention: true,
             owner_mxid: m.manager_mxid.clone(),
             requester_mxid: m.manager_mxid.clone(),
@@ -770,7 +770,7 @@ mod clock_tests {
         assert!(!m.addressed_by("@manager:example.test", &none, false));
         assert!(m.addressed_by("@member:example.test", &mention, true));
         m.space_id.clear();
-        let mut f = DeliveryFacts {
+        let mut f = DeliveryFacts { reply_mode: Default::default(),
                 requires_mention: false,
             owner_mxid: m.manager_mxid.clone(),
             requester_mxid: "@member:example.test".into(),

@@ -201,6 +201,7 @@ impl Gateway {
         if space.is_empty() {
             let state = self.state(room).await?;
             return Ok(crate::transport::DeliveryFacts {
+                reply_mode: crate::agent_replies::Mode::of(&state),
                 requires_mention: !one_to_one(&state, owner, puppet, &self.service_mxid)
                     && !(!pool && requester != owner && pair_room(&state, owner, requester, puppet, &self.service_mxid)),
                 owner_direct_valid: agent_conversation(&state, owner, puppet)
@@ -225,6 +226,7 @@ impl Gateway {
         }
         let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
         Ok(crate::transport::DeliveryFacts {
+            reply_mode: crate::agent_replies::Mode::of(&room_state),
             requires_mention: pool || requester == owner
                 || !pair_room(&room_state, owner, requester, puppet, &self.service_mxid),
             owner_direct_valid: false,

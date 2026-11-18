@@ -1388,7 +1388,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
         epoch: lease.epoch,
     };
     let (b, good) = &bindings[0];
-    let delivery = DeliveryFacts {
+    let delivery = DeliveryFacts { reply_mode: Default::default(),
                 requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: p.mxid.clone(),

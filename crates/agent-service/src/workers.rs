@@ -361,7 +361,7 @@ async fn send(
             .worker_token
             .as_deref()
             .ok_or(Error::Unavailable("missing_sender_claim"))?;
-        let content = crate::agent_replies::answer_content(g, scope.space_id.is_empty(), &intent).await;
+        let content = crate::agent_replies::answer_content(f.reply_mode, scope.space_id.is_empty(), &intent);
         let outcome = m
             .send(
                 &intent.puppet_mxid,
@@ -499,8 +499,7 @@ async fn send_request_notices(
             crate::transport::request_notices::body(&notice.kind),
         );
         // TODO(R4): workers.rs is over budget; split the notice content builders out of the send loops.
-        let mode = crate::agent_replies::room_mode(g, &scope.room_id).await;
-        if crate::agent_replies::is_flat(mode, scope.space_id.is_empty(), &scope.room_id, &notice.event_id, &notice.thread_root) {
+        if crate::agent_replies::is_flat(f.reply_mode, scope.space_id.is_empty(), &notice.event_id, &notice.thread_root) {
             content["m.relates_to"] = json!({"m.in_reply_to":{"event_id":notice.event_id}});
         }
         let outcome = m

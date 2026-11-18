@@ -138,7 +138,7 @@ fn wire_shape_is_camel_case_and_omits_empty_optionals() {
 }
 
 fn facts(encrypted: bool) -> crate::transport::DeliveryFacts {
-    crate::transport::DeliveryFacts {
+    crate::transport::DeliveryFacts { reply_mode: Default::default(),
         owner_mxid: ALICE.into(), requester_mxid: ALICE.into(), puppet_mxid: PUPPET.into(),
         room_id: "!r:example.org".into(), space_id: String::new(), observed_at_ms: 1,
         owner_in_space: true, owner_in_room: true, room_in_space: true, requester_in_room: true,

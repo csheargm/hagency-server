@@ -122,6 +122,8 @@ pub struct DeliveryFacts {
     pub owner_direct_valid: bool,
     /// Fresh room membership, independent of m.direct and binding scope.
     pub requires_mention: bool,
+    /// The room's Agent-replies choice in the same snapshot (ADR 0004).
+    pub reply_mode: crate::agent_replies::Mode,
 }
 #[derive(Debug, Serialize, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
