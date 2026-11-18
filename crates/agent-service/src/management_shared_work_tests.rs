@@ -18,7 +18,7 @@ pub(super) async fn message(f: &Fixture, r: &ManagedAgentRequest, id: &str) -> R
         mentioned_mxids: BTreeSet::from([m.puppet_mxid]),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     }
 }
 pub(super) async fn queued(

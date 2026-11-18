@@ -16,6 +16,9 @@ pub(crate) const MIN_EDIT_INTERVAL_MS: i64 = 1500;
 const MAX_RECENT: usize = 5;
 const MAX_STEP_BYTES: usize = 512;
 const WORKING: &str = "⏳ Working…\n⏳ 正在处理…";
+/// The one in-place cue for a slow turn, shown from `SLOW_AFTER_MS` on.
+const STILL_WORKING: &str = "⏳ Still working, taking a while…\n⏳ 仍在处理，耗时较长…";
+const SLOW_AFTER_MS: i64 = 120_000;
 const DONE: &str = "✅ Done in {s} s · {n} steps\n✅ 已完成，用时 {s} 秒 · {n} 步";
 const DONE_ONE: &str = "✅ Done in {s} s · 1 step\n✅ 已完成，用时 {s} 秒 · 1 步";
 
@@ -65,8 +68,10 @@ pub(crate) struct ProgressStatus {
     pub outcome: Option<String>,
     #[diesel(sql_type=Nullable<BigInt>)]
     pub reply_at_ms: Option<i64>,
+    #[diesel(sql_type=diesel::sql_types::Bool)]
+    pub slow: bool,
 }
-const SELECT: &str = "SELECT s.id,s.binding_id,s.binding_generation,s.execution_id,s.started_at_ms,s.recent,s.step_count,s.final_body,s.revision,s.sent_revision,s.matrix_txn_id,s.status_event_id,s.state,s.worker_token,e.requester_mxid,e.room_id,e.event_id,e.thread_root,e.state AS event_state,e.execution_id AS event_execution_id,e.outcome,(SELECT r.created_at_ms FROM hagency_agent_v1.reply_outbox r WHERE r.owner_event_id=e.id) AS reply_at_ms FROM hagency_agent_v1.progress_status s JOIN hagency_agent_v1.owner_events e ON e.id=s.owner_event_id";
+const SELECT: &str = "SELECT s.id,s.binding_id,s.binding_generation,s.execution_id,s.started_at_ms,s.recent,s.step_count,s.final_body,s.revision,s.sent_revision,s.matrix_txn_id,s.status_event_id,s.state,s.worker_token,e.requester_mxid,e.room_id,e.event_id,e.thread_root,e.state AS event_state,e.execution_id AS event_execution_id,e.outcome,(SELECT r.created_at_ms FROM hagency_agent_v1.reply_outbox r WHERE r.owner_event_id=e.id) AS reply_at_ms,s.slow FROM hagency_agent_v1.progress_status s JOIN hagency_agent_v1.owner_events e ON e.id=s.owner_event_id";
 
 /// Plain text with control characters folded to spaces, bounded per step.
 fn clean(step: &str) -> Result<String> {
@@ -81,8 +86,8 @@ fn clean(step: &str) -> Result<String> {
 const SHOWN_EARLIER: usize = 3;
 /// The live body: current step on the header line, the few before it below,
 /// oldest first (rehearsal 2026-11-12: newest-first read backwards).
-pub(crate) fn live_body(recent: &[String]) -> String {
-    let header = request_notices::localized(WORKING);
+pub(crate) fn live_body(recent: &[String], slow: bool) -> String {
+    let header = request_notices::localized(if slow { STILL_WORKING } else { WORKING });
     let Some((current, earlier)) = recent.split_last() else {
         return header.to_owned();
     };
@@ -119,7 +124,7 @@ pub(super) fn body_of(s: &ProgressStatus) -> String {
         return body.clone();
     }
     let recent: Vec<String> = serde_json::from_value(s.recent.clone()).unwrap_or_default();
-    live_body(&recent)
+    live_body(&recent, s.slow)
 }
 #[path = "progress_status_content.rs"]
 mod content;
@@ -159,6 +164,11 @@ impl TransportStore {
                 return Err(Error::Conflict("execution_not_running"));
             }
             plaintext_sendable(&scope, &e.requester_mxid, f, now)?;
+            // An automation's request (`automated_requests`) gets no status line.
+            let automated = sql_query("SELECT automated AS matched FROM hagency_agent_v1.owner_events WHERE id=$1").bind::<Text, _>(dispatch_id).get_result::<Flag>(db).await?;
+            if automated.matched {
+                return Ok(false);
+            }
             let changed = sql_query("INSERT INTO hagency_agent_v1.progress_status(id,owner_event_id,execution_id,binding_id,binding_generation,started_at_ms,recent,step_count,matrix_txn_id,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'live') ON CONFLICT(owner_event_id) DO UPDATE SET recent=EXCLUDED.recent,step_count=greatest(progress_status.step_count,EXCLUDED.step_count),revision=progress_status.revision+1 WHERE progress_status.state='live' AND progress_status.execution_id=EXCLUDED.execution_id AND EXCLUDED.step_count>=progress_status.step_count AND (progress_status.recent,progress_status.step_count) IS DISTINCT FROM (EXCLUDED.recent,greatest(progress_status.step_count,EXCLUDED.step_count))")
                 .bind::<Text, _>(format!("progress_{}", hash(dispatch_id))).bind::<Text, _>(dispatch_id)
                 .bind::<Text, _>(execution_id).bind::<Text, _>(&e.binding_id).bind::<BigInt, _>(e.binding_generation)
@@ -189,6 +199,9 @@ impl TransportStore {
                 sql_query("UPDATE hagency_agent_v1.progress_status SET state='final',final_body=$2,revision=revision+1 WHERE id=$1 AND state='live'")
                     .bind::<Text, _>(&s.id).bind::<Text, _>(final_body(&s, now)).execute(db).await?;
             }
+            // A slow turn's one "Still working" cue, an edit of its posted line.
+            sql_query("UPDATE hagency_agent_v1.progress_status SET slow=true,revision=revision+1 WHERE state='live' AND NOT slow AND status_event_id IS NOT NULL AND started_at_ms<=$1-$2")
+                .bind::<BigInt, _>(now).bind::<BigInt, _>(SLOW_AFTER_MS).execute(db).await?;
             Ok(sql_query(format!("{SELECT} WHERE s.state IN ('live','final') AND s.sent_revision<s.revision AND s.worker_until_ms<=$1 AND s.last_sent_ms<=$1-$3 ORDER BY (s.id<=$2),s.id LIMIT 20"))
                 .bind::<BigInt, _>(now).bind::<Text, _>(cursor).bind::<BigInt, _>(MIN_EDIT_INTERVAL_MS).load(db).await?)
         })

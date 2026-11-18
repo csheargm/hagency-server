@@ -179,7 +179,7 @@ pub(super) async fn fixture() -> Fixture {
         facts,
     }
 }
-fn event(f: &Fixture, id: &str, mention: bool, thread: Option<&str>) -> RoutedEvent {
+pub(super) fn event(f: &Fixture, id: &str, mention: bool, thread: Option<&str>) -> RoutedEvent {
     RoutedEvent {
         event_id: format!("${id}"),
         room_id: f.facts.room_id.clone(),
@@ -192,7 +192,7 @@ fn event(f: &Fixture, id: &str, mention: bool, thread: Option<&str>) -> RoutedEv
         },
         thread_root: thread.map(str::to_owned),
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     }
 }
 pub(super) async fn enqueue(f: &Fixture, id: &str) -> String {
@@ -2735,7 +2735,7 @@ async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() 
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers() {
+async fn postgres_a_delayed_answer_posts_no_interim_notice() {
     let f = fixture().await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
@@ -2744,146 +2744,96 @@ async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers()
     };
     let id = enqueue(&f, "delivery-after-slow-model").await;
     running(&f, &lease, &id, "slow-model-run").await;
-    {
-        let mut db = f.transport.db.lock().await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(now - 60_000).bind::<Text, _>(&id).execute(&mut *db).await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
-            .bind::<BigInt, _>(now - 61_000).execute(&mut *db).await.unwrap();
-        // Exercise an upgrade of the already initialized transport too.
-        let old = include_str!("request_notice_needed.sql").replace(
-            "AND r.created_at_ms<=", "AND e.created_at_ms<=",
-        );
-        db.batch_execute(&old).await.unwrap();
-    }
-    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    TransportStore::open(&url, Limits::default()).await.unwrap();
     let reply = f.transport.submit_reply(&f.p, &lease, SubmitReply {
         dispatch_id: id.clone(), execution_id: "slow-model-run".into(), body: "The answer is ready".into(),
     }, &f.facts, now).await.unwrap();
-    assert!(f.transport.request_notice_candidates("", now).await.unwrap().iter().all(|n| n.owner_event_id != id),
-        "model time must not make a newly created answer look undeliverable");
     {
         let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 200_000).bind::<Text, _>(&id).execute(&mut *db).await.unwrap();
         sql_query("UPDATE hagency_agent_v1.reply_outbox SET created_at_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(now - 31_000).bind::<Text, _>(&reply.id).execute(&mut *db).await.unwrap();
+            .bind::<BigInt, _>(now - 200_000).bind::<Text, _>(&reply.id).execute(&mut *db).await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
+            .bind::<BigInt, _>(now - 201_000).execute(&mut *db).await.unwrap();
     }
-    let candidates = f.transport.request_notice_candidates("", now).await.unwrap();
-    let notice = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
-    assert_eq!(notice.kind, "delivery", "genuinely delayed delivery still gets feedback");
-    let sending = f.transport.claim_reply(&reply.id, &f.facts, now).await.unwrap();
-    f.transport.confirm_reply(&reply.id, sending.worker_token.as_deref().unwrap(), Some("$delivered-answer:test"), now).await.unwrap();
-    assert!(f.transport.claim_request_notice(&notice.id, &f.facts, now).await.is_err(),
-        "a queued warning must not be sent after the answer is confirmed");
-    assert!(f.transport.request_notice_candidates("", now).await.unwrap().iter().all(|n| n.owner_event_id != id));
+    // Owner, 2026-11-18: "Finished, but not delivered yet" lines flooded the room.
+    assert!(f.transport.request_notice_candidates("", now).await.unwrap().iter().all(|n| n.owner_event_id != id),
+        "a slow delivery retries quietly; the answer itself is the only message");
+}
+
+/// The server loses a running request the way an execution-device change does.
+async fn lose_run(f: &Fixture, id: &str) {
+    sql_query("UPDATE hagency_agent_v1.owner_events SET state='unknown' WHERE id=$1 AND state='running'")
+        .bind::<Text, _>(id).execute(&mut *f.transport.db.lock().await.unwrap()).await.unwrap();
 }
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_suppressed() {
+async fn postgres_a_run_the_device_reported_lost_gets_no_second_message() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f.transport.acquire_for_test(&f.p, &f.agent, 30_000, false, now).await.unwrap().epoch,
+    };
+    let person = enqueue(&f, "lost-person").await;
+    let handoff = RoutedEvent { automated: true, ..event(&f, "lost-handoff", true, None) };
+    let RouteResult::Queued { dispatch_id: handoff } = f.transport.ingest_routed(&f.binding, handoff, &f.facts, now).await.unwrap() else {
+        panic!("a hand-off is queued like any request");
+    };
+    running(&f, &lease, &person, "lost-person-run").await;
+    running(&f, &lease, &handoff, "lost-handoff-run").await;
+    // The device edits its own run line to "went offline" and reports it.
+    f.transport.finish_without_reply(&f.p, &lease, &person, "lost-person-run", "unknown", now).await.unwrap();
+    // The issue watcher's tracker line reports a lost hand-off.
+    lose_run(&f, &handoff).await;
+    sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=least(since_ms,$1)")
+        .bind::<BigInt, _>(now - 1000).execute(&mut *f.transport.db.lock().await.unwrap()).await.unwrap();
+    let candidates = f.transport.request_notice_candidates("", now).await.unwrap();
+    assert!(candidates.iter().all(|n| n.owner_event_id != person), "one line per lost run: the device's own");
+    assert!(candidates.iter().all(|n| n.owner_event_id != handoff), "a lost hand-off: the tracker line only");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_queued_request_posts_no_notice_and_outcomes_still_do() {
     let f = fixture().await;
     let now = crate::api::now_ms();
     let id = enqueue(&f, "offline-feedback").await;
-    assert!(
-        f.transport
-            .request_notice_candidates("", now)
-            .await
-            .unwrap()
-            .iter()
-            .all(|n| n.owner_event_id != id)
-    );
-    {
-        let mut db = f.transport.db.lock().await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(now - 31_000)
-            .bind::<Text, _>(&id)
-            .execute(&mut *db)
-            .await
-            .unwrap();
-        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
-            .bind::<BigInt, _>(now - 32_000)
-            .execute(&mut *db)
-            .await
-            .unwrap();
-    }
-    let candidates = f
-        .transport
-        .request_notice_candidates("", now)
-        .await
-        .unwrap();
-    let n = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
-    assert_eq!(n.kind, "waiting");
-    let mut denied = f.facts.clone();
-    denied.puppet_can_send_message = false;
-    assert!(
-        f.transport
-            .claim_request_notice(&n.id, &denied, now)
-            .await
-            .is_err()
-    );
-    // A denial for one notice is permanent, but cannot cancel queued inference.
-    let e = TransportStore::dispatch(&mut f.transport.db.lock().await.unwrap(), &f.p, &id)
-        .await
-        .unwrap();
-    assert_eq!(e.state, "pending");
     let second = enqueue(&f, "offline-next").await;
+    let third = enqueue(&f, "offline-last").await;
     {
         let mut db = f.transport.db.lock().await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(now - 31_000)
-            .bind::<Text, _>(&second)
-            .execute(&mut *db)
-            .await
-            .unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id IN ($2,$3,$4)")
+            .bind::<BigInt, _>(now - 200_000).bind::<Text, _>(&id).bind::<Text, _>(&second).bind::<Text, _>(&third)
+            .execute(&mut *db).await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
+            .bind::<BigInt, _>(now - 201_000).execute(&mut *db).await.unwrap();
     }
-    let candidates = f
-        .transport
-        .request_notice_candidates("", now)
-        .await
-        .unwrap();
-    let n = candidates
-        .iter()
-        .find(|n| n.owner_event_id == second)
-        .unwrap();
+    // Owner, 2026-11-18: "Request received; the Agent has not started" flooded the room.
+    let candidates = f.transport.request_notice_candidates("", now).await.unwrap();
+    assert!(candidates.iter().all(|n| ![&id, &second, &third].contains(&&n.owner_event_id)), "queued work stays quiet");
+    let e = TransportStore::dispatch(&mut f.transport.db.lock().await.unwrap(), &f.p, &id).await.unwrap();
+    assert_eq!(e.state, "pending", "and stays queued");
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
-        epoch: f
-            .transport
-            .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
-            .await
-            .unwrap()
-            .epoch,
+        epoch: f.transport.acquire_for_test(&f.p, &f.agent, 30_000, false, now).await.unwrap().epoch,
     };
-    running(&f, &lease, &second, "offline-restored").await;
-    assert!(
-        f.transport
-            .claim_request_notice(&n.id, &f.facts, now)
-            .await
-            .is_err(),
-        "do not send an obsolete waiting notice after start"
-    );
-    f.transport
-        .finish_without_reply(&f.p, &lease, &second, "offline-restored", "unknown", now)
-        .await
-        .unwrap();
-    let candidates = f
-        .transport
-        .request_notice_candidates("", now)
-        .await
-        .unwrap();
-    let n = candidates
-        .iter()
-        .find(|n| n.owner_event_id == second)
-        .unwrap();
-    assert_eq!(n.kind, "interrupted");
-    // Status notices do not need a live device lease.
+    for (dispatch, run) in [(&second, "offline-restored"), (&third, "offline-last-run")] {
+        running(&f, &lease, dispatch, run).await;
+        lose_run(&f, dispatch).await;
+    }
+    let candidates = f.transport.request_notice_candidates("", now).await.unwrap();
+    let n = candidates.iter().find(|n| n.owner_event_id == second).unwrap();
+    assert_eq!(n.kind, "interrupted", "a run the server lost is still reported");
+    let mut denied = f.facts.clone();
+    denied.puppet_can_send_message = false;
+    assert!(f.transport.claim_request_notice(&n.id, &denied, now).await.is_err());
+    assert!(f.transport.claim_request_notice(&n.id, &f.facts, now).await.is_err(), "a denial is permanent");
+    let last = candidates.iter().find(|n| n.owner_event_id == third).unwrap();
+    // Outcome notices do not need a live device lease.
     f.transport.release_lease(&f.p, &lease, now).await.unwrap();
-    assert!(
-        f.transport
-            .claim_request_notice(&n.id, &f.facts, now)
-            .await
-            .is_ok()
-    );
+    assert!(f.transport.claim_request_notice(&last.id, &f.facts, now).await.is_ok());
 }
 
 #[tokio::test]

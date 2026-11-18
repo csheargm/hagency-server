@@ -1413,7 +1413,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
         mentioned_mxids: [delivery.puppet_mxid.clone()].into(),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     };
     let RouteResult::Queued {
         dispatch_id: queued_id,
@@ -1432,7 +1432,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
         mentioned_mxids: [delivery.puppet_mxid.clone()].into(),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     };
     let RouteResult::Queued { dispatch_id } = transport
         .ingest_routed(&b.id, event, &delivery, *NOW)
@@ -1545,7 +1545,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
         mentioned_mxids: [delivery.puppet_mxid.clone()].into(),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     };
     assert!(matches!(
         transport

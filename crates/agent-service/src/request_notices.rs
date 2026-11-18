@@ -1,4 +1,6 @@
-//! Durable per-request feedback. Does not consume model quota, start/replay work,
+//! Durable per-request outcome feedback (failed, declined, expired, interrupted).
+//! There are no interim notices: a slow turn shows once, in place, on its live
+//! status (`progress_status`). Does not consume model quota, start/replay work,
 //! or require the executing device to be online. Fresh Matrix authority still applies.
 use super::*;
 
@@ -25,11 +27,6 @@ fn in_language(text: &'static str, language: &str) -> &'static str {
 }
 fn bilingual(kind: &str) -> &'static str {
     match kind {
-        "waiting" => {
-            "⏳ Request received; the Agent has not started on it yet (offline or busy). It stays queued, no need to resend.\n⏳ 请求已收到，Agent 当前尚未开始处理（可能离线或正在处理其他请求）。请求仍在等待，无需重复发送。"
-        }
-        "processing" => "⏳ Still working on this request; it is taking a while. No need to resend.\n⏳ Agent 仍在处理本次请求，耗时较长，请稍候。",
-        "delivery" => "⏳ Finished, but the reply has not been delivered yet; retrying. No need to resend.\n⏳ 本次处理已结束，但回复暂未送达，系统正在重试发送。",
         "failed" => "⚠️ This request failed before a reply could be sent. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again. New requests still work.\n⚠️ 本次请求处理失败，未生成可发送的回复。若 Agent 需要的工具被策略拒绝，请在“额度与审批”中调整后重试。",
         "rejected" => "⏸️ This request was not authorized by the Agent's owner. Other authorized requests still work.\n⏸️ 本次请求未获处理授权。",
         "expired" => "⚠️ This request timed out before processing started. You can send it again.\n⚠️ 本次请求等待超时，尚未开始处理。你可以重新发送请求。",
@@ -139,11 +136,11 @@ mod language_tests {
     use super::*;
     #[test]
     fn english_rooms_get_only_the_english_line() {
-        let text = bilingual("processing");
-        assert_eq!(in_language(text, "en"), "⏳ Still working on this request; it is taking a while. No need to resend.");
-        assert!(in_language(text, "zh").starts_with("⏳ Agent"));
+        let text = bilingual("expired");
+        assert_eq!(in_language(text, "en"), "⚠️ This request timed out before processing started. You can send it again.");
+        assert!(in_language(text, "zh").starts_with("⚠️ 本次请求"));
         assert_eq!(in_language(text, ""), text);
-        for kind in ["waiting", "processing", "delivery", "failed", "rejected", "expired", "interrupted"] {
+        for kind in ["failed", "rejected", "expired", "interrupted"] {
             assert!(!in_language(bilingual(kind), "en").contains('\n'), "{kind} has no English-only line");
         }
     }

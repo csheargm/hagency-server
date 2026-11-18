@@ -106,6 +106,7 @@ pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         thread_root,
         encrypted: false,
         is_edit: false,
+        automated: crate::automated_requests::is_automated(c),
     })
 }
 /// Edits and redactions of earlier plaintext events. They never become prompts
@@ -180,6 +181,7 @@ fn parse_encrypted(raw: &Value) -> Option<RoutedEvent> {
         thread_root,
         encrypted: true,
         is_edit: false,
+        automated: false,
     })
 }
 #[cfg(test)]

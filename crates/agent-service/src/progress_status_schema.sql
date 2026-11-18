@@ -16,3 +16,7 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.progress_status (
  worker_token text, worker_until_ms bigint NOT NULL DEFAULT 0, last_sent_ms bigint NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS progress_status_pending_idx ON hagency_agent_v1.progress_status(state,id);
+-- A request a Hagency automation posted (the issue watcher's hand-off) gets no
+-- live status at all; `slow` marks the one in-place "Still working" cue.
+ALTER TABLE hagency_agent_v1.owner_events ADD COLUMN IF NOT EXISTS automated boolean NOT NULL DEFAULT false;
+ALTER TABLE hagency_agent_v1.progress_status ADD COLUMN IF NOT EXISTS slow boolean NOT NULL DEFAULT false;

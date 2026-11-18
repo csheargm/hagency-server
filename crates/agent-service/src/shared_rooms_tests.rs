@@ -172,7 +172,7 @@ async fn pool_agent_additional_project_room_is_owner_bound_and_keeps_original_ch
         mentioned_mxids: Default::default(),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     };
     f.domain
         .route_shared_event(&f.policy, &event, crate::api::now_ms(), &matrix.gateway)
@@ -224,7 +224,7 @@ async fn pool_agent_additional_project_room_is_owner_bound_and_keeps_original_ch
         .await
         .unwrap();
     matrix.states.lock().unwrap().get_mut(room).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
-    let encrypted=crate::transport::RoutedEvent{event_id:"$extra-room-encrypted".into(),room_id:room.into(),sender_mxid:"@member:example.test".into(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false};
+    let encrypted=crate::transport::RoutedEvent{event_id:"$extra-room-encrypted".into(),room_id:room.into(),sender_mxid:"@member:example.test".into(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false, automated:false};
     f.domain.route_shared_event(&f.policy,&encrypted,crate::api::now_ms(),&matrix.gateway).await.unwrap();
     let scopes=f.domain.shared_crypto_poll(&f.owner.p,None).await.unwrap();
     assert!(scopes["scopes"].as_array().unwrap().iter().any(|s|s["roomId"]==room&&s["events"].as_array().is_some_and(|e|!e.is_empty())));
@@ -289,7 +289,7 @@ async fn pool_original_room_becomes_group_requires_mentions_even_from_owner() {
             mentioned_mxids: Default::default(),
             thread_root: Some("$old-thread".into()),
             encrypted: false,
-            is_edit: false,
+            is_edit: false, automated: false,
         };
         f.domain
             .route_shared_event(&f.policy, &event, crate::api::now_ms(), &matrix.gateway)
@@ -347,7 +347,7 @@ async fn encrypted_pool_group_needs_explicit_mention_including_owner_and_threads
                 mentioned_mxids: Default::default(),
                 thread_root: None,
                 encrypted: true,
-                is_edit: false,
+                is_edit: false, automated: false,
             };
             f.domain
                 .route_shared_event(&f.policy, &event, crate::api::now_ms(), &matrix.gateway)
@@ -423,7 +423,7 @@ async fn encrypted_ingress_uses_its_source_clock_without_rewriting_received_time
     let (f,request,assignment,matrix)=prepared_pool(true).await;
     matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let received=now_ms();
-    let event=crate::transport::RoutedEvent{event_id:"$clock-skew-ciphertext".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false};
+    let event=crate::transport::RoutedEvent{event_id:"$clock-skew-ciphertext".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false, automated:false};
     // Reproduce the measured Docker PostgreSQL clock lag deterministically.
     f.domain.set_management_test_clock(received-1).await.unwrap();
     f.domain.route_shared_event(&f.policy,&event,received,&matrix.gateway).await.unwrap();

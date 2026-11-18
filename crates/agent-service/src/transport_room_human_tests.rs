@@ -14,7 +14,7 @@ async fn record_human(f: &Fixture, human: &str) {
 fn plain(f: &Fixture, id: &str, sender: &str) -> RoutedEvent {
     RoutedEvent {
         event_id: format!("${id}"), room_id: f.facts.room_id.clone(), sender_mxid: sender.into(),
-        body: "hello".into(), mentioned_mxids: BTreeSet::new(), thread_root: None, encrypted: false, is_edit: false,
+        body: "hello".into(), mentioned_mxids: BTreeSet::new(), thread_root: None, encrypted: false, is_edit: false, automated: false,
     }
 }
 fn pair_facts(f: &Fixture, sender: &str) -> DeliveryFacts {

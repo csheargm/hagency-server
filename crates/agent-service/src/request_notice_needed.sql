@@ -1,21 +1,21 @@
--- Sending delay starts when the answer exists, not when inference began.
 CREATE OR REPLACE VIEW hagency_agent_v1.request_notice_needed AS
  SELECT e.id AS owner_event_id, e.binding_id, e.requester_mxid, e.thread_root, e.binding_generation,
  CASE
-  WHEN e.state='unknown' AND r.id IS NULL AND ps.status_event_id IS NULL THEN 'interrupted'
+  WHEN e.state='unknown' AND r.id IS NULL AND ps.status_event_id IS NULL AND e.outcome IS NULL AND NOT e.automated THEN 'interrupted'
   WHEN e.state='cancelled' AND e.outcome='unknown' AND e.execution_id IS NULL THEN 'failed'
   WHEN e.state IN ('completed','cancelled') AND e.outcome IN ('failed','rejected') AND ps.status_event_id IS NULL THEN e.outcome
   WHEN e.state='cancelled' AND e.outcome='expired' THEN 'expired'
-  WHEN e.state IN ('pending','offered','acknowledged') AND e.created_at_ms<= (extract(epoch from clock_timestamp())*1000)::bigint-30000 THEN 'waiting'
-  WHEN e.state='running' AND (ps.id IS NULL OR (ps.state='cancelled' AND ps.status_event_id IS NULL)) AND e.created_at_ms<= (extract(epoch from clock_timestamp())*1000)::bigint-120000 THEN 'processing'
-  WHEN r.id IS NOT NULL AND r.state<>'sent' AND NOT r.delivery_blocked AND r.created_at_ms<= (extract(epoch from clock_timestamp())*1000)::bigint-30000 THEN 'delivery'
  END AS kind
  FROM hagency_agent_v1.owner_events e
  LEFT JOIN hagency_agent_v1.reply_outbox r ON r.owner_event_id=e.id
- -- A live status message (progress_status) replaces "Still working…", and its
- -- final edit carries the failure text, so those notices are not sent twice.
--- A status cancelled before it was ever posted (e.g. Matrix denied the first
--- post) replaces nothing, so "Still working…" is still owed.
+ -- Only outcomes are posted. Interim "queued", "still working" and "reply
+ -- delayed" notices flooded busy rooms (owner, 2026-11-18); a slow turn now
+ -- shows once, in place, on its live status (progress_status `slow`). A posted
+ -- status's final edit carries the failure text, so it is not sent twice.
+ -- "Interrupted" is owed only when the server itself lost the run (outcome
+ -- NULL: the execution device changed). A device that reports `unknown` has
+ -- already edited its own run line to "went offline", and an automation's
+ -- request (the issue watcher) reports the loss on its tracker line.
  LEFT JOIN hagency_agent_v1.progress_status ps ON ps.owner_event_id=e.id
  JOIN hagency_agent_v1.request_notice_deployment d ON d.singleton AND e.created_at_ms>=d.since_ms
  JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id AND b.generation=e.binding_generation

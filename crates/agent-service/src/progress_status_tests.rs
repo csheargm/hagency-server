@@ -2,13 +2,15 @@ use super::*;
 #[test]
 fn live_and_done_bodies_read_as_plain_words() {
     // Tests run without HAGENCY_NOTICE_LANGUAGE: both languages, English first.
-    assert!(live_body(&[]).starts_with("⏳ Working…"));
-    let body = live_body(&["reading a.rs".into(), "searching fn main".into(), "running `cargo test`".into()]);
+    assert!(live_body(&[], false).starts_with("⏳ Working…"));
+    let body = live_body(&["reading a.rs".into(), "searching fn main".into(), "running `cargo test`".into()], false);
     let mut lines = body.lines();
     assert_eq!(lines.next(), Some("⏳ Working… running `cargo test`"));
     assert!(body.contains("\n· reading a.rs\n· searching fn main"), "oldest first");
-    let long = live_body(&["s1".into(), "s2".into(), "s3".into(), "s4".into(), "s5".into()]);
+    let long = live_body(&["s1".into(), "s2".into(), "s3".into(), "s4".into(), "s5".into()], false);
     assert_eq!(long.lines().filter(|l| l.starts_with("· ")).collect::<Vec<_>>(), vec!["· s2", "· s3", "· s4"], "current plus the three before it");
+    let slow = live_body(&["running `cargo test`".into()], true);
+    assert_eq!(slow.lines().next(), Some("⏳ Still working, taking a while… running `cargo test`"));
     assert!(done_body(41_200, 6).starts_with("✅ Done in 41 s · 6 steps"));
     assert!(done_body(200, 1).starts_with("✅ Done in 1 s · 1 step\n"));
     assert!(clean("a\u{7}b").unwrap() == "a b" && clean("  ").is_err());
@@ -96,9 +98,8 @@ async fn postgres_status_is_posted_once_edited_summarized_and_fenced() {
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_denied_first_status_post_keeps_still_working_notice() {
+async fn postgres_a_slow_turn_without_a_posted_status_posts_no_notice() {
     use super::super::tests::{enqueue, fixture, running};
-    use diesel::sql_types::BigInt;
     let f = fixture().await;
     let t = &f.transport;
     let now = crate::api::now_ms();
@@ -112,17 +113,84 @@ async fn postgres_denied_first_status_post_keeps_still_working_notice() {
     let claim = t.claim_progress(&candidate.id, &f.facts, now).await.unwrap();
     let denied = Err(Error::Conflict("matrix_permission_missing"));
     t.confirm_progress(&claim.id, claim.worker_token.as_deref().unwrap(), claim.revision, &denied, now).await.unwrap();
-    {
-        let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        let mut raw = AsyncPgConnection::establish(&url).await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(now - 130_000).bind::<Text, _>(&id).execute(&mut raw).await.unwrap();
-        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
-            .bind::<BigInt, _>(now - 131_000).execute(&mut raw).await.unwrap();
-    }
+    age(&id, now - 130_000).await;
+    // Owner, 2026-11-18: no "Still working" room message, ever; without an
+    // in-place line there is nothing to update, so nothing is shown.
     let notices = t.request_notice_candidates("", now).await.unwrap();
-    let notice = notices.iter().find(|n| n.owner_event_id == id).expect("fallback notice owed");
-    assert_eq!(notice.kind, "processing", "a never-posted, cancelled status must not suppress Still working");
+    assert!(notices.iter().all(|n| n.owner_event_id != id), "no Still working message");
+}
+
+async fn raw() -> AsyncPgConnection {
+    AsyncPgConnection::establish(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap()).await.unwrap()
+}
+/// Back-dates a request and its status, as if it started at `at`, inside the
+/// notice deployment window.
+async fn age(id: &str, at: i64) {
+    use diesel::sql_types::BigInt;
+    let mut db = raw().await;
+    for table in ["owner_events SET created_at_ms=$1 WHERE id=$2", "progress_status SET started_at_ms=$1 WHERE owner_event_id=$2"] {
+        sql_query(format!("UPDATE hagency_agent_v1.{table}")).bind::<BigInt, _>(at).bind::<Text, _>(id).execute(&mut db).await.unwrap();
+    }
+    sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=least(since_ms,$1)").bind::<BigInt, _>(at - 1000).execute(&mut db).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_slow_person_request_is_marked_once_in_place() {
+    use super::super::tests::{enqueue, fixture, running};
+    let f = fixture().await;
+    let t = &f.transport;
+    let now = crate::api::now_ms();
+    let lease = t.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
+    let lease = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
+    let id = enqueue(&f, "progress-slow").await;
+    running(&f, &lease, &id, "slow-run").await;
+    let steps = vec!["running `cargo test`".to_owned()];
+    assert!(t.record_progress(&f.p, &lease, &id, "slow-run", &steps, 1, &f.facts, now).await.unwrap());
+    let first = t.progress_candidates("", now).await.unwrap().into_iter().find(|s| s.thread_root == "$progress-slow").unwrap();
+    let first = t.claim_progress(&first.id, &f.facts, now).await.unwrap();
+    t.confirm_progress(&first.id, first.worker_token.as_deref().unwrap(), first.revision, &Ok("$slow-status".into()), now).await.unwrap();
+    age(&id, now - 130_000).await;
+    let later = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS + 100;
+    let due = t.progress_candidates("", later).await.unwrap();
+    let edit = due.iter().find(|s| s.id == first.id).expect("the cue is an edit of the posted line");
+    assert_eq!(edit.revision, first.revision + 1);
+    let edit = t.claim_progress(&edit.id, &f.facts, later).await.unwrap();
+    let (_, content) = status_content(false, &edit);
+    assert_eq!(content["m.relates_to"], serde_json::json!({"rel_type":"m.replace","event_id":"$slow-status"}), "in place, not a new message");
+    assert!(content["m.new_content"]["body"].as_str().unwrap().starts_with("⏳ Still working, taking a while… running `cargo test`"));
+    t.confirm_progress(&edit.id, edit.worker_token.as_deref().unwrap(), edit.revision, &Ok("$slow-edit".into()), later).await.unwrap();
+    // At most once: later scans never mark it again, so nothing more is due.
+    let much_later = crate::api::now_ms() + 10 * MIN_EDIT_INTERVAL_MS;
+    assert!(t.progress_candidates("", much_later).await.unwrap().iter().all(|s| s.id != first.id), "one cue only");
+    assert!(t.request_notice_candidates("", much_later).await.unwrap().iter().all(|n| n.owner_event_id != id));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_an_issue_hand_off_gets_no_interim_message_at_all() {
+    use super::super::tests::{event, fixture, running};
+    use crate::transport::RouteResult;
+    let f = fixture().await;
+    let t = &f.transport;
+    let now = crate::api::now_ms();
+    let handoff = RoutedEvent { automated: true, ..event(&f, "issue-handoff", true, None) };
+    let RouteResult::Queued { dispatch_id: id } = t.ingest_routed(&f.binding, handoff, &f.facts, now).await.unwrap() else {
+        panic!("a hand-off is queued like any request");
+    };
+    let lease = t.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
+    let lease = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
+    running(&f, &lease, &id, "handoff-run").await;
+    let steps = vec!["running `gh pr create`".to_owned()];
+    assert!(!t.record_progress(&f.p, &lease, &id, "handoff-run", &steps, 1, &f.facts, now).await.unwrap(), "no Working… line");
+    age(&id, now - 300_000).await;
+    let later = crate::api::now_ms() + MIN_EDIT_INTERVAL_MS;
+    assert!(t.progress_candidates("", later).await.unwrap().iter().all(|s| s.thread_root != "$issue-handoff"));
+    assert!(t.request_notice_candidates("", later).await.unwrap().iter().all(|n| n.owner_event_id != id), "no Still working");
+    // The final result still arrives: a failure is reported once.
+    t.finish_without_reply(&f.p, &lease, &id, "handoff-run", "failed", later).await.unwrap();
+    let notices = t.request_notice_candidates("", later).await.unwrap();
+    assert_eq!(notices.iter().filter(|n| n.owner_event_id == id).map(|n| n.kind.as_str()).collect::<Vec<_>>(), vec!["failed"]);
 }
 
 #[tokio::test]

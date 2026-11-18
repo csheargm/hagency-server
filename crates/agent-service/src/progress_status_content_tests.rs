@@ -8,7 +8,7 @@ fn status(event_id: &str, room_id: &str, thread_root: &str, sent: Option<&str>) 
         matrix_txn_id: "hg-progress-a".into(), status_event_id: sent.map(str::to_owned),
         state: "live".into(), worker_token: None, requester_mxid: "@bob:test".into(),
         room_id: room_id.into(), event_id: event_id.into(), thread_root: thread_root.into(),
-        event_state: "running".into(), event_execution_id: Some("run_a".into()), outcome: None, reply_at_ms: None,
+        event_state: "running".into(), event_execution_id: Some("run_a".into()), outcome: None, reply_at_ms: None, slow: false,
     }
 }
 

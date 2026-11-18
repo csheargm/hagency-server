@@ -123,7 +123,7 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
     assert!(runtime.command.reserve_command.pool_grant.is_some());
     assert!(runtime.command.reserve_command.project_id.is_empty());
     let activity=save(&f,&runtime,"qualified",101).await.unwrap().activity.unwrap();
-    let event=crate::transport::RoutedEvent {event_id:"$pool_text".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:"Hello pool Agent".into(),mentioned_mxids:Default::default(),thread_root:None,encrypted:false,is_edit:false};
+    let event=crate::transport::RoutedEvent {event_id:"$pool_text".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:"Hello pool Agent".into(),mentioned_mxids:Default::default(),thread_root:None,encrypted:false,is_edit:false, automated:false};
     f.domain.route_shared_event(&f.policy,&event,now_ms(),&matrix.gateway).await.unwrap();
     let work=f.domain.poll_shared_work(&f.owner.p,&f.policy,activity.authority.clone(),&matrix.gateway).await.unwrap().unwrap();
     let input=SharedWorkInput {authority:activity.authority.clone(),work_id:work.id.clone(),work_digest:allocation_digest(&work).unwrap()};
@@ -229,7 +229,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         event_id: "$research_status".into(), room_id: request.room_id.clone(),
         sender_mxid: f.outsider.p.mxid.clone(), body: "Research this".into(),
         mentioned_mxids: Default::default(), thread_root: Some("$research_thread".into()),
-        encrypted: false, is_edit: false,
+        encrypted: false, is_edit: false, automated: false,
     };
     f.domain.route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway).await.unwrap();
     let query = json!({"roomId":request.room_id});
@@ -310,7 +310,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
     let mut event = crate::transport::RoutedEvent {
         event_id: "$plain_pool_chat".into(), room_id: request.room_id.clone(),
         sender_mxid: f.outsider.p.mxid.clone(), body: "你好".into(),
-        mentioned_mxids: Default::default(), thread_root: None, encrypted: false, is_edit: false,
+        mentioned_mxids: Default::default(), thread_root: None, encrypted: false, is_edit: false, automated: false,
     };
     let puppet = f.domain.managed_agent_matrix(&f.outsider.p, &f.policy, &request.id)
         .await.unwrap().unwrap().puppet_mxid;
@@ -1368,7 +1368,7 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
     let received=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count").get_result::<Count>(&mut db).await.unwrap().count;
-    let event=crate::transport::RoutedEvent{event_id:"$encrypted_pool".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false};
+    let event=crate::transport::RoutedEvent{event_id:"$encrypted_pool".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false, automated:false};
     f.domain.route_shared_event(&f.policy,&event,received,&matrix.gateway).await.unwrap();
     assert!(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work) AS matched").get_result::<Check>(&mut db).await.unwrap().matched);
     let poll=f.domain.shared_crypto_poll(&f.owner.p,None).await.unwrap();
@@ -1438,7 +1438,7 @@ async fn split_pool_limits_initial_command_requires_native_no_issue_proof_before
 }
 async fn initial_command_no_issue_proof(cap: Option<i64>) {
     let (f,request,assignment,matrix)=prepared_pool_limits(true,true,cap).await;
-    let queued=crate::transport::RoutedEvent{event_id:"$before-first-process".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:"Hello after startup".into(),mentioned_mxids:Default::default(),thread_root:None,encrypted:false,is_edit:false};
+    let queued=crate::transport::RoutedEvent{event_id:"$before-first-process".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:"Hello after startup".into(),mentioned_mxids:Default::default(),thread_root:None,encrypted:false,is_edit:false, automated:false};
     f.domain.route_shared_event(&f.policy,&queued,now_ms(),&matrix.gateway).await.unwrap();
     let first=shared_poll(&f).await;
     assert!(first.execution_allowed);

@@ -90,6 +90,7 @@ pub struct Lease {
     #[diesel(sql_type=BigInt)]
     pub expires_at_ms: i64,
 }
+// TODO(R4): over budget; split RoutedEvent and ingest_routed into transport_ingest.rs.
 /// Canonical event parsed from a verified Appservice transaction, never from a
 /// client request. Mentions and relation fields retain canonical Matrix meaning.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,6 +103,10 @@ pub struct RoutedEvent {
     pub thread_root: Option<String>,
     pub encrypted: bool,
     pub is_edit: bool,
+    /// Posted by a Hagency automation (`automated_requests`): it gets no
+    /// interim status. Omitted when false so older digests stay the same.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automated: bool,
 }
 /// Trusted gateway observation of the exact owner, requester, puppet and Room.
 #[derive(Clone, Debug)]
@@ -376,7 +381,7 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
-            // Idempotent; must exist before the notice view that suppresses "Still working…".
+            // Idempotent; must exist before the notice view that reads its columns.
             db.batch_execute(include_str!("progress_status_schema.sql")).await?;
             // Refresh the derived view for existing installations without changing journals.
             db.batch_execute(include_str!("request_notice_needed.sql")).await?;
@@ -745,8 +750,8 @@ impl TransportStore {
                 None=>&event.event_id,
             };
             let id=format!("evt_{}",entity_id()?);
-            sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12)")
-                .bind::<Text,_>(&id).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(root).bind::<Text,_>(&event.body).bind::<Text,_>(digest).bind::<BigInt,_>(scope.binding_generation).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+            sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms,automated) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13)")
+                .bind::<Text,_>(&id).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(root).bind::<Text,_>(&event.body).bind::<Text,_>(digest).bind::<BigInt,_>(scope.binding_generation).bind::<BigInt,_>(received_at_ms).bind::<diesel::sql_types::Bool,_>(event.automated).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.agent_threads(binding_id,thread_root) VALUES($1,$2) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(root).execute(db).await?;
             Ok(RouteResult::Queued{dispatch_id:id})
         }).await

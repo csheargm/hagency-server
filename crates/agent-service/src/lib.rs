@@ -49,6 +49,7 @@ mod room_context_tests;
 pub mod store;
 pub mod transport;
 mod workers;
+mod automated_requests;
 mod agent_replies;
 mod worker_pass;
 mod reply_format;

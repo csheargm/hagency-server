@@ -201,7 +201,7 @@ async fn postgres_owner_direct_switches_to_group_mentions_with_assigned_device()
         mentioned_mxids: Default::default(),
         thread_root: None,
         encrypted: false,
-        is_edit: false,
+        is_edit: false, automated: false,
     };
     assert!(
         f.domain
