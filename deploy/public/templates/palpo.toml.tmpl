@@ -2,6 +2,8 @@
 server_name = "${SERVER_NAME}"
 allow_registration = false
 trusted_servers = []
+# Proxies allowed to set X-Forwarded-For for Palpo's per-IP limits (tunnel: edge subnet).
+trusted_proxies = [${PALPO_TRUSTED_PROXIES}]
 # Caps (from .env). Palpo has no per-user media quota or room-creation limit;
 # createRoom and uploads are capped per IP in Caddy instead.
 max_upload_size = ${MAX_UPLOAD_BYTES}

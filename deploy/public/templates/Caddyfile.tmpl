@@ -4,7 +4,7 @@
 	http_port ${HTTP_PORT}
 	https_port ${HTTPS_PORT}
 	order rate_limit before basic_auth
-	${CADDY_TRUSTED_PROXIES}
+	${CADDY_SERVERS_BLOCK}
 }
 
 # Per-client-IP caps (mholt/caddy-ratelimit). Values from .env RL_*; 429 when exceeded.
@@ -67,7 +67,7 @@
 	}
 }
 
-${DOMAIN} {
+${SITE_SCHEME}${DOMAIN} {
 	import security_headers
 	import rate_limits
 	request_body {
@@ -90,11 +90,15 @@ ${DOMAIN} {
 	}
 	# /_matrix (client + federation), /auth (Pasion), /hagency (REST), app.
 	handle {
-		reverse_proxy server:8088
+		reverse_proxy server:8088 {
+			# One address Palpo can trust: the client IP Caddy resolved (CF-Connecting-IP
+			# only from CADDY_TRUSTED_PROXIES), not a client-supplied chain.
+			header_up X-Forwarded-For {client_ip}
+		}
 	}
 }
 
-${ELEMENT_DOMAIN} {
+${SITE_SCHEME}${ELEMENT_DOMAIN} {
 	import security_headers
 	header X-Frame-Options SAMEORIGIN
 	reverse_proxy element:80

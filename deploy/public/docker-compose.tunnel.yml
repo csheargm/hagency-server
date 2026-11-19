@@ -1,0 +1,18 @@
+# Added by lib.sh compose() when TLS_MODE=tunnel (Cloudflare Tunnel terminates HTTPS).
+# Caddy speaks plain HTTP on 127.0.0.1:HTTP_PORT only; cloudflared on the host is its
+# one client. The edge subnet is pinned so lib.sh knows which address (the gateway,
+# EDGE_SUBNET .1) Docker uses for published-port connections.
+services:
+  caddy:
+    ports: !override
+      - "${BIND_ADDR}:${HTTP_PORT}:${HTTP_PORT}"
+    # No DOMAIN alias: there is no HTTPS inside the box, so containers that dial the
+    # public URL must go out through Cloudflare like everybody else.
+    networks: !override
+      edge: {}
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET}

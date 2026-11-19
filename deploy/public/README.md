@@ -87,6 +87,49 @@ Backups contain secrets and the Matrix signing key: copy them off the host encry
 (e.g. `restic` to object storage) and keep the directory private. Losing the signing key
 loses the server's federation identity.
 
+## Cloudflare Tunnel mode (no open ports, e.g. a Mac at home)
+
+`TLS_MODE=tunnel`: Cloudflare terminates HTTPS and `cloudflared` on the same host forwards
+the three names to Caddy, which then speaks **plain HTTP on `127.0.0.1:HTTP_PORT` only**
+(no ACME, no HTTPS port, no inbound firewall rule). Public URLs stay `https://DOMAIN`
+(port 443) for Palpo, Pasion, Element and the `.well-known` files.
+
+```
+TLS_MODE=tunnel
+BIND_ADDR=127.0.0.1          # enforced
+HTTP_PORT=18080              # any free local port
+EDGE_SUBNET=172.30.18.0/24   # pinned Docker edge network (free /24)
+CONCIERGE_ENABLED=false      # enforced: the concierge needs HTTPS inside the box
+```
+
+- `docker-compose.tunnel.yml` is added automatically: it publishes only `127.0.0.1:HTTP_PORT`,
+  pins the edge subnet and drops Caddy's `DOMAIN` network alias.
+- Client IPs: Docker hands `cloudflared`'s connections to Caddy from the edge gateway
+  (`EDGE_SUBNET` .1), so `CADDY_TRUSTED_PROXIES` defaults to that `/32` and Caddy takes the
+  client IP from `CF-Connecting-IP` only from there. Caddy then sends that single IP upstream as
+  `X-Forwarded-For`, and Palpo trusts it only from the edge subnet (`trusted_proxies`).
+  Pasion cannot be told about proxies yet (the server forces its `trusted_proxies = []`), so its
+  per-IP limits are global ceilings (`PASION_*`) and the real per-IP caps are Caddy's `RL_*`.
+- `~/.cloudflared/config.yml` (one tunnel, three names, then a 404 rule):
+
+```yaml
+tunnel: <tunnel id>
+credentials-file: /path/to/<tunnel id>.json
+ingress:
+  - hostname: hagencylabs.xyz
+    service: http://127.0.0.1:18080
+  - hostname: matrix.hagencylabs.xyz
+    service: http://127.0.0.1:18080
+  - hostname: app.hagencylabs.xyz
+    service: http://127.0.0.1:18080
+  - service: http_status:404
+```
+
+  DNS: `cloudflared tunnel route dns --overwrite-dns <tunnel> <name>` for each name (proxied CNAMEs).
+  Federation then goes through Cloudflare on 443 (`/.well-known/matrix/server` delegation as above);
+  check with `https://federationtester.matrix.org/api/report?server_name=SERVER_NAME`.
+- Test: `test/tunnel-test.sh` (local, nothing public).
+
 ## Cloudflare notes
 
 - `matrix.`: keep **DNS only (grey)** if federation or long-poll `/sync` misbehaves (Cloudflare

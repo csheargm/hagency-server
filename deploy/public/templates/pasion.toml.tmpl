@@ -9,6 +9,13 @@ password_registration_enabled = ${PASSWORD_REGISTRATION_ENABLED}
 password_registration_contact_required = false
 # invite mode: sign-up needs a one-time token (./deploy.sh invite).
 registration_token_required = ${REGISTRATION_TOKEN_REQUIRED}
-# Pasion's default password strength (zxcvbn 3) and rate limits
-# (3 logins/min, 3 registrations/hour per IP) are kept on purpose.
+# Pasion's default password strength (zxcvbn 3) is kept on purpose.
+# hagency-server forces Pasion's http.trusted_proxies = [] (crates/backend/src/pasion.rs),
+# so Pasion sees every request coming from Caddy and its per-IP limits are ONE global
+# bucket (defaults would be 3 logins/min for everybody). Real per-IP caps are Caddy's
+# RL_AUTH_PER_MIN; these are global ceilings. TODO: expose trusted_proxies in the server.
+[rate_limiting]
+registration = { burst = ${PASION_REGISTRATION_BURST}, per_second = ${PASION_REGISTRATION_PER_SECOND} }
+[rate_limiting.login]
+per_ip = { burst = ${PASION_LOGIN_BURST}, per_second = ${PASION_LOGIN_PER_SECOND} }
 ${GITHUB_PROVIDER_BLOCK}
